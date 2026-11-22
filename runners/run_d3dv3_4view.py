@@ -287,6 +287,7 @@ def run_colab_d3dv3(
     colab_bin: str | None = None,
     dry_run: bool = False,
     remote_timeout_s: float = 3600.0,
+    compare_crevice_keep: bool = False,
 ) -> dict[str, Any]:
     """Run or dry-run-package 4-view Direct3D-V3 1536^3 fusion on Google Colab."""
     _assert_not_system_temp(out_dir)
@@ -307,6 +308,7 @@ def run_colab_d3dv3(
         coarse_path=coarse_path,
         secondary_coarse_path=secondary_coarse_path,
         view_paths=view_paths,
+        extra_spec={"compare_crevice_keep": bool(compare_crevice_keep)},
     )
     entry_py = _write_remote_exec_entry(staging_dir, bundle["spec"]["bundle_sha256"])
 
@@ -314,6 +316,7 @@ def run_colab_d3dv3(
         summary = {
             "dry_run": True,
             "profile": profile_name,
+            "compare_crevice_keep": bool(compare_crevice_keep),
             "bundle_bytes": bundle["bundle_path"].stat().st_size,
             "chunk_count": len(bundle["chunks"]),
             "staging_dir": str(staging_dir),
@@ -412,12 +415,26 @@ def run_colab_d3dv3(
         )
         dl_dir = out_dir / "colab_out"
         extracted_files = _safe_extract_tar(archive_local, dl_dir)
-        return {
+        report_path = dl_dir / "d3dv3_report.json"
+        report_data = json.loads(report_path.read_text(encoding="utf-8")) if report_path.is_file() else {}
+        host_summary = {
             "gpu_sku": sku,
             "session": session_name,
+            "profile": profile_name,
+            "compare_crevice_keep": bool(compare_crevice_keep),
             "out_dir": str(dl_dir),
             "extracted_files": extracted_files,
+            "download_transport": _transport,
+            "download_chunk_count": len(_manifest.get("chunks", [])),
+            "download_total_bytes": int(_manifest.get("total_size", 0)),
+            "download_bundle_sha256": str(_manifest.get("bundle_sha256", _manifest.get("sha256", ""))),
+            "report": report_data,
         }
+        (out_dir / "d3dv3_host_summary.json").write_text(
+            json.dumps(host_summary, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return host_summary
     finally:
         signal.signal(signal.SIGINT, old_sigint)
         signal.signal(signal.SIGTERM, old_sigterm)
@@ -437,6 +454,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--gpu-order", default="A100,H100,G4")
     ap.add_argument("--colab-bin", default=None)
     ap.add_argument("--remote-timeout-s", type=float, default=3600.0)
+    ap.add_argument("--compare-crevice-keep", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
@@ -455,6 +473,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         colab_bin=args.colab_bin,
         dry_run=bool(args.dry_run),
         remote_timeout_s=float(args.remote_timeout_s),
+        compare_crevice_keep=bool(args.compare_crevice_keep),
     )
     print(json.dumps(res, indent=2))
     return 0

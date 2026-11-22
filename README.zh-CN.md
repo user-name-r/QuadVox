@@ -95,11 +95,12 @@ quadvox profile-show --profile hard_surface_roi
 quadvox s0-preprocess --input path/to/views_raw --out-dir runs/my_asset/views_prepped --mode mv
 
 # S1（Colab GPU）：运行四视角 Direct3D-V3 1536^3 体素融合（可先加 --dry-run 本地校验打包内容与配置）
+# 附加 --compare-crevice-keep 可同时输出修复前后 crevice_keep 权重与网格对比报告
 python3 runners/run_d3dv3_4view.py \
   --profile hard_surface_roi \
   --coarse path/to/coarse.glb \
   --front views/front.png --left views/left.png --back views/back.png --right views/right.png \
-  --out-dir runs/my_asset/s1_d3dv3 --dry-run
+  --out-dir runs/my_asset/s1_d3dv3 --compare-crevice-keep --dry-run
 
 # S2：Blender SLIM 低碎片化 UV 展开 + 4K 法线/AO/曲率 Cycles 笼罩烘焙
 quadvox s2-unwrap-bake \
@@ -137,6 +138,18 @@ quadvox s3-lookdev \
 
 ### 2. 无需手动抠像素对齐的部分（由管线自动纠偏）
 - **全局缩放比例与画面二维居中偏移**：`quadvox s0-preprocess` 会基于 Alpha 遮罩自动提取前景包围盒并按统一留边（`pad_factor=1.1`）居中缩放；S0/S3 中的 `calibrate_s0_ortho_camera` 与 `compute_silhouette_alignment_warp` 会自动针对 3D 网格轮廓解算各视角的精确正交缩放、平移偏移与亚像素轮廓形变对齐。
+
+---
+
+## 验证与云端 GPU 基准状态
+
+- **离线单测与架构规范检查（`pytest -v`）**：`24 passed`（覆盖 `test_architecture_and_hygiene`、`test_d3dv3_4view_fusion`、`test_s2_retopo_and_uv`、`test_s0_and_s3_lookdev`、`test_cloud_resilience_and_runners`），已验证：
+  - `crevice_keep` 修复前后对比（`compare_crevice_keep_preflight`）：修复下降沿 `_sstep` 钳位缺陷后，在保持向下悬挑（`vn_y < -0.58`）抑制的同时恢复垂直侧面（`|vn_x| > 0.70`）视角权重。
+  - S2 烘焙外扩前外缘 `1–2 px` UV 岛边界平滑与钳位（`smooth_clamp_uv_island_border`）：在 EDT 膨胀前消除边界噪点毛刺并确保切线法线单位化，同时完整保留 `head_ring_dilation=16` 与 `pack_method="blender_concave"` 默认行为。
+  - S3 语义隔离三维谐波补洞（`mesh_harmonic_fill(..., face_labels=...)` 与 `bake_two_band_albedo`）：杜绝共享边界顶点处的跨语义色彩渗色，并对零观测语义分类提供中性回退（`face_labels=None` 保持向后兼容）。
+  - S1/S2 编排脚本 `--dry-run` / `--dry-run-bundle` CLI 契约（`run_d3dv3_4view.py`、`run_s2_prop.py`、`run_s2_uv_bake.py`）与零 `/tmp`、零第三层硬编码合规检查。
+- **主机端 `--dry-run` 打包验证（`runners/run_d3dv3_4view.py --profile symmetric_humanoid --compare-crevice-keep --dry-run`）**：在四视角正交输入与归一化 `1.0`m 粗模上验证通过（归档 `7,904,004` 字节，`1` 个分片）。
+- **高显存 Colab 实测状态（`A100,H100,G4`，禁用 `L4` 回退）**：本轮验证中前置高显存 GPU 抢占在 `A100`（`32.2s`）、`H100`（`32.3s`）、`G4`（`32.1s`）均返回 `HTTP 503 Service Unavailable`，且已确认云端会话清空（`Active assignments: 0`）；按规则跳过本轮实机测试，不虚构实测耗时数据。
 
 ---
 

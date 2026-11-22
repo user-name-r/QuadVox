@@ -14,7 +14,10 @@ import trimesh
 from PIL import Image
 
 from quadvox.cloud import colab_resilience
+from runners.run_d3dv3_4view import main as run_d3dv3_main
 from runners.run_d3dv3_4view import run_colab_d3dv3
+from runners.run_s2_prop import main as run_s2_prop_main
+from runners.run_s2_uv_bake import main as run_s2_uv_bake_main
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -327,5 +330,107 @@ def test_run_s1_pixal3d_cli_and_runmeta_contract() -> None:
         raw["gpu_name"] = f"A100 ({raw['gpu_name']})"
         reloaded = RunMeta.from_dict(raw)
         assert reloaded.gpu_name == "A100 (NVIDIA A100-SXM4-40GB)"
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def test_s2_prop_uv_bake_and_d3dv3_cli_dry_run_contracts(capsys) -> None:
+    work = REPO_ROOT / "runs" / "_test_tmp_s2_runners"
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        mesh = trimesh.creation.icosphere(subdivisions=2, radius=0.4)
+        mesh.vertices[:, 1] += 0.5
+        high_glb = work / "high.glb"
+        low_glb = work / "low.glb"
+        mesh.export(str(high_glb))
+        mesh.export(str(low_glb))
+
+        views_dir = work / "views"
+        views_dir.mkdir()
+        for vn in ("front", "left", "back", "right"):
+            Image.fromarray(np.full((32, 32, 3), 180, dtype=np.uint8)).save(views_dir / f"{vn}.png")
+
+        # 1. run_s2_prop.py --dry-run and --dry-run-bundle CLI contracts
+        for flag in ("--dry-run", "--dry-run-bundle"):
+            out_prop = work / f"prop_{flag.lstrip('-')}"
+            rc_prop = run_s2_prop_main(
+                [
+                    "--high-glb",
+                    str(high_glb),
+                    "--out-dir",
+                    str(out_prop),
+                    "--gpu-order",
+                    "A100,H100,G4",
+                    "--seeds",
+                    "42,43",
+                    flag,
+                ]
+            )
+            assert rc_prop == 0
+            prop_out = json.loads(capsys.readouterr().out)
+            assert prop_out["gpu_order"] == ["A100", "H100", "G4"]
+            assert prop_out["no_hardcoded_tmp"] is True
+            assert (out_prop / "_colab_staging" / "job_spec.json").is_file()
+            spec_prop = json.loads((out_prop / "_colab_staging" / "job_spec.json").read_text(encoding="utf-8"))
+            assert spec_prop["lato2_seeds"] == [42, 43]
+            assert spec_prop["high_glb"] == "inputs/high.glb"
+
+        # 2. run_s2_uv_bake.py --dry-run and --dry-run-bundle CLI contracts
+        for flag in ("--dry-run", "--dry-run-bundle"):
+            out_uv = work / f"uv_{flag.lstrip('-')}"
+            rc_uv = run_s2_uv_bake_main(
+                [
+                    "--high-mesh",
+                    str(high_glb),
+                    "--low-uv-mesh",
+                    str(low_glb),
+                    "--out-dir",
+                    str(out_uv),
+                    "--gpu-order",
+                    "A100,H100,G4",
+                    "--framing-mode",
+                    "character",
+                    flag,
+                ]
+            )
+            assert rc_uv == 0
+            uv_dry = json.loads((out_uv / "colab_uv_dry_run.json").read_text(encoding="utf-8"))
+            assert uv_dry["dry_run"] is True
+            assert uv_dry["dry_run_bundle"] is True
+            assert uv_dry["chunk_count"] >= 1
+            uv_spec = json.loads((out_uv / "_colab_staging" / "job_spec.json").read_text(encoding="utf-8"))
+            assert uv_spec["jobs"][0]["framing_mode"] == "character"
+
+        # 3. run_d3dv3_4view.py --profile symmetric_humanoid --compare-crevice-keep --dry-run
+        out_d3 = work / "d3dv3_dry"
+        rc_d3 = run_d3dv3_main(
+            [
+                "--profile",
+                "symmetric_humanoid",
+                "--coarse",
+                str(high_glb),
+                "--front",
+                str(views_dir / "front.png"),
+                "--left",
+                str(views_dir / "left.png"),
+                "--back",
+                str(views_dir / "back.png"),
+                "--right",
+                str(views_dir / "right.png"),
+                "--out-dir",
+                str(out_d3),
+                "--gpu-order",
+                "A100,H100,G4",
+                "--compare-crevice-keep",
+                "--dry-run",
+            ]
+        )
+        assert rc_d3 == 0
+        d3_dry = json.loads((out_d3 / "d3dv3_dry_run.json").read_text(encoding="utf-8"))
+        assert d3_dry["compare_crevice_keep"] is True
+        d3_spec = json.loads((out_d3 / "_colab_staging" / "job_spec.json").read_text(encoding="utf-8"))
+        assert d3_spec["compare_crevice_keep"] is True
+        assert d3_spec["profile"]["s1"]["d3dv3_fusion"]["front_roi_box"]["name"] == "front_head_roi"
+        assert d3_spec["profile"]["s2"]["symmetry_x"] is True
     finally:
         shutil.rmtree(work, ignore_errors=True)

@@ -537,6 +537,7 @@ def run_colab_uv_bake(
     timeout: int = DEFAULT_TIMEOUT,
     colab_bin: str = DEFAULT_COLAB_BIN,
     dry_run_bundle: bool = False,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     _assert_not_system_temp(out_dir)
     validated_gpus = validate_gpu_order(gpu_order)
@@ -554,8 +555,9 @@ def run_colab_uv_bake(
     staging_dir = out_dir / "_colab_staging"
     bundle = build_upload_bundle(staging_dir=staging_dir, jobs=jobs, gpu_order=validated_gpus, timeout_s=int(timeout))
 
-    if dry_run_bundle:
+    if dry_run_bundle or dry_run:
         dry_rep = {
+            "dry_run": True,
             "dry_run_bundle": True,
             "total_size_mb": round(bundle["manifest"]["total_size"] / (1024 * 1024), 3),
             "chunk_count": len(bundle["manifest"]["chunks"]),
@@ -662,7 +664,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--out-dir", default="runs/s2_uv_bake")
     ap.add_argument("--gpu-order", default="A100,H100,G4")
     ap.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
-    ap.add_argument("--dry-run-bundle", action="store_true")
+    ap.add_argument("--dry-run", "--dry-run-bundle", dest="dry_run_bundle", action="store_true")
     ap.add_argument("--high-mesh", required=True, help="Highpoly reference GLB/OBJ.")
     ap.add_argument("--low-uv-mesh", required=True, help="Lowpoly UV-unwrapped GLB.")
     ap.add_argument("--uv-preview-png", default=None)

@@ -4004,12 +4004,190 @@ def _write_4k_contact_sheet_in_blender(
     return out_sheet_png
 
 
-def _blender_dilate_2d_margin(arr: Any, mask: Any, padding_px: int, bg_value: Sequence[float]) -> Any:
-    """Extend valid pixels outward by `padding_px` pixels without overwriting island interiors."""
+def _erode_bool_8(mask: Any, radius: int) -> Any:
+    """8-connected binary erosion treating image edges as interior."""
+    import numpy as np
+
+    cur = np.asarray(mask, dtype=bool).copy()
+    steps = max(0, int(radius))
+    h, w = cur.shape
+    for _ in range(steps):
+        padded = np.pad(cur, 1, mode="constant", constant_values=True)
+        eroded = np.ones_like(cur, dtype=bool)
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                eroded &= padded[1 + dy : 1 + dy + h, 1 + dx : 1 + dx + w]
+        cur = eroded
+    return cur
+
+
+def _gather_window_stats(
+    work_pad: Any,
+    ref_pad: Any,
+    by: Any,
+    bx: Any,
+    max_r: int,
+    win_r: int,
+    *,
+    exclude_center: bool = False,
+) -> tuple[Any, Any, Any, Any]:
+    """Gather neighbor count, min, max, and 1/dist weighted mean over `[-win_r, win_r]`."""
+    import numpy as np
+
+    n = int(len(by))
+    c = int(work_pad.shape[2])
+    count = np.zeros(n, dtype=np.int32)
+    wsum = np.zeros(n, dtype=np.float32)
+    acc = np.zeros((n, c), dtype=np.float32)
+    vmin = np.full((n, c), np.inf, dtype=np.float32)
+    vmax = np.full((n, c), -np.inf, dtype=np.float32)
+
+    py = by + max_r
+    px = bx + max_r
+    for dy in range(-win_r, win_r + 1):
+        for dx in range(-win_r, win_r + 1):
+            if exclude_center and dy == 0 and dx == 0:
+                continue
+            valid = ref_pad[py + dy, px + dx]
+            if not np.any(valid):
+                continue
+            vals = work_pad[py + dy, px + dx]
+            dist = float(np.hypot(dy, dx))
+            w = 1.0 if dist == 0.0 else (1.0 / dist)
+            count[valid] += 1
+            wsum[valid] += w
+            acc[valid] += w * vals[valid]
+            vmin[valid] = np.minimum(vmin[valid], vals[valid])
+            vmax[valid] = np.maximum(vmax[valid], vals[valid])
+
+    has_ref = count > 0
+    mean = np.zeros((n, c), dtype=np.float32)
+    mean[has_ref] = acc[has_ref] / np.maximum(wsum[has_ref, None], 1e-8)
+    return has_ref, vmin, vmax, mean
+
+
+def smooth_clamp_uv_island_border(
+    arr: Any,
+    mask: Any,
+    *,
+    border_px: int = 2,
+    smooth_alpha: float = 0.8,
+    renormalize_normals: bool = False,
+    min_tangent_nz: float = 0.25,
+) -> Any:
+    """Clamp and smooth outer `1-2 px` UV island border texels before EDT gutter dilation.
+
+    Uses a tiered local clean reference lookup (`erode_N` interior -> `erode_1` -> non-self mask)
+    so grazing rim spikes on UV island boundaries are clamped to local interior bounds and
+    smoothed toward clean neighbors without altering pixels deep inside the UV island.
+    """
+    import numpy as np
+
+    orig = np.asarray(arr)
+    mask_b = np.asarray(mask, dtype=bool)
+    out = orig.copy()
+    bpx = max(0, int(border_px))
+    if bpx == 0 or not np.any(mask_b):
+        return out
+
+    erode_1 = _erode_bool_8(mask_b, 1)
+    interior = erode_1 if bpx == 1 else _erode_bool_8(mask_b, bpx)
+    border_mask = mask_b & ~interior
+    if not np.any(border_mask):
+        return out
+
+    was_2d = out.ndim == 2
+    work = np.asarray(out, dtype=np.float32)
+    if was_2d:
+        work = work[:, :, None]
+
+    by, bx = np.where(border_mask)
+    max_r = 3
+    work_pad = np.pad(work, ((max_r, max_r), (max_r, max_r), (0, 0)), mode="edge")
+    int_pad = np.pad(interior, ((max_r, max_r), (max_r, max_r)), mode="constant", constant_values=False)
+    e1_pad = np.pad(erode_1, ((max_r, max_r), (max_r, max_r)), mode="constant", constant_values=False)
+    m_pad = np.pad(mask_b, ((max_r, max_r), (max_r, max_r)), mode="constant", constant_values=False)
+
+    orig_vals = work[by, bx]
+    c = int(work.shape[2])
+    n = int(len(by))
+    resolved = np.zeros(n, dtype=bool)
+    ref_min = orig_vals.copy()
+    ref_max = orig_vals.copy()
+    ref_mean = orig_vals.copy()
+
+    tiers = [
+        (int_pad, 2, False),
+        (int_pad, 3, False),
+        (e1_pad, 2, False),
+        (m_pad, 2, True),
+    ]
+    for ref_pad, win_r, excl_self in tiers:
+        need = ~resolved
+        if not np.any(need):
+            break
+        has_ref, vmin, vmax, mean = _gather_window_stats(
+            work_pad, ref_pad, by[need], bx[need], max_r, win_r, exclude_center=excl_self
+        )
+        if np.any(has_ref):
+            idx = np.flatnonzero(need)[has_ref]
+            ref_min[idx] = vmin[has_ref]
+            ref_max[idx] = vmax[has_ref]
+            ref_mean[idx] = mean[has_ref]
+            resolved[idx] = True
+
+    clamped = orig_vals.copy()
+    if np.any(resolved):
+        clamped[resolved] = np.clip(orig_vals[resolved], ref_min[resolved], ref_max[resolved])
+
+    alpha_base = float(np.clip(smooth_alpha, 0.0, 1.0))
+    outer_rim = ~erode_1[by, bx]
+    alpha = np.where(outer_rim, alpha_base, 0.5 * alpha_base)[:, None].astype(np.float32)
+    blended = clamped.copy()
+    if np.any(resolved):
+        blended[resolved] = (1.0 - alpha[resolved]) * clamped[resolved] + alpha[resolved] * ref_mean[resolved]
+        blended[resolved] = np.clip(blended[resolved], ref_min[resolved], ref_max[resolved])
+
+    if renormalize_normals and c == 3:
+        scale = 255.0 if np.issubdtype(orig.dtype, np.integer) else 1.0
+        n_xyz = (blended / scale) * 2.0 - 1.0
+        n_xyz[:, 2] = np.maximum(n_xyz[:, 2], float(min_tangent_nz))
+        norms = np.linalg.norm(n_xyz, axis=1, keepdims=True)
+        bad = norms[:, 0] < 1e-6
+        if np.any(bad):
+            n_xyz[bad] = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+            norms[bad] = 1.0
+        blended = np.clip(0.5 + 0.5 * (n_xyz / norms), 0.0, 1.0) * scale
+
+    work_out = work.copy()
+    work_out[by, bx] = blended
+    if np.issubdtype(orig.dtype, np.integer):
+        work_out = np.rint(work_out)
+    res = work_out[:, :, 0] if was_2d else work_out
+    return res.astype(orig.dtype, copy=False)
+
+
+def _blender_dilate_2d_margin(
+    arr: Any,
+    mask: Any,
+    padding_px: int,
+    bg_value: Sequence[float],
+    *,
+    border_smooth_px: int = 2,
+    renormalize_normals: bool = False,
+) -> Any:
+    """Smooth/clamp outer `1-2 px` island borders, then extend valid pixels outward by `padding_px`."""
     import numpy as np
 
     pad = max(0, int(padding_px))
     out = arr.copy()
+    if int(border_smooth_px) > 0 and np.any(mask):
+        out = smooth_clamp_uv_island_border(
+            out,
+            mask,
+            border_px=int(border_smooth_px),
+            renormalize_normals=bool(renormalize_normals),
+        )
     bg = np.asarray(bg_value, dtype=out.dtype)
     out[~mask] = bg
     if pad == 0 or not np.any(mask):
@@ -4925,7 +5103,13 @@ def _run_bake_4k_in_blender(
                 renormalize_normals=True,
             )
 
-        dilated_normal = _blender_dilate_2d_margin(comp_normal_rgb, comp_uv_mask, effective_pad, (0.5, 0.5, 1.0))
+        dilated_normal = _blender_dilate_2d_margin(
+            comp_normal_rgb,
+            comp_uv_mask,
+            effective_pad,
+            (0.5, 0.5, 1.0),
+            renormalize_normals=True,
+        )
         out_normal_png.parent.mkdir(parents=True, exist_ok=True)
         nrm_out_img = bpy.data.images.new("BakedNormal4K", width=res, height=res, alpha=False, float_buffer=False)
         nrm_out_img.colorspace_settings.name = "Non-Color"

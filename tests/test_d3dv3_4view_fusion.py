@@ -14,6 +14,7 @@ from quadvox.s1_geometry.d3dv3_fusion import (
     _sstep,
     _sstep_np,
     build_view_rotation,
+    compare_crevice_keep_preflight,
     compute_4view_voxel_weights,
     compute_step_beta_and_cfg,
     compute_surface_visibility_and_weights,
@@ -195,3 +196,28 @@ def test_sstep_descending_and_crevice_keep_preserves_vertical_sides() -> None:
     vertical_left = (vnorms[:, 0] > 0.85) & (np.abs(vnorms[:, 1]) < 0.15)
     assert int(vertical_left.sum()) >= 5
     assert float(w_surf[vertical_left, 2].mean()) >= 0.70
+
+
+def test_crevice_keep_preflight_comparison_fixed_vs_legacy() -> None:
+    sphere = trimesh.creation.icosphere(subdivisions=3, radius=0.42)
+    verts = np.asarray(sphere.vertices, dtype=np.float32)
+    verts[:, 1] += 0.50
+    faces = np.asarray(sphere.faces, dtype=np.int32)
+
+    pre = compute_surface_visibility_and_weights(
+        verts, faces, zres=128, roi_boxes=(), crevice_keep_mode="legacy_unfixed"
+    )
+    post = compute_surface_visibility_and_weights(
+        verts, faces, zres=128, roi_boxes=(), crevice_keep_mode="fixed"
+    )
+    vn = post["vn"]
+    vis_tot = post["vis"].sum(axis=1)
+    vert_partial = (np.abs(vn[:, 0]) > 0.70) & (np.abs(vn[:, 1]) < 0.20) & (vis_tot < 2.35)
+    overhang = (vn[:, 1] < -0.58) & (vis_tot < 2.20)
+    assert np.any(vert_partial) and np.any(overhang)
+    assert float(post["crevice_keep"][vert_partial].mean()) > float(pre["crevice_keep"][vert_partial].mean()) + 0.50
+    assert float(post["crevice_keep"][overhang].mean()) < float(pre["crevice_keep"][overhang].mean()) - 0.30
+
+    cmp_rep = compare_crevice_keep_preflight(verts, faces, zres=128)
+    assert cmp_rep["crevice_keep_max_abs_diff"] > 0.5
+    assert cmp_rep["vertical_partial_crevice_keep_postfix"] > cmp_rep["vertical_partial_crevice_keep_preflight"]

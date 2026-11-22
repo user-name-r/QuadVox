@@ -95,11 +95,12 @@ quadvox profile-show --profile hard_surface_roi
 quadvox s0-preprocess --input path/to/views_raw --out-dir runs/my_asset/views_prepped --mode mv
 
 # S1 (Colab GPU): 4-View Direct3D-V3 1536^3 Voxel Fusion (verify bundle locally first with --dry-run)
+# Add --compare-crevice-keep to output both post-fix and pre-fix crevice_keep surface/mesh diffs.
 python3 runners/run_d3dv3_4view.py \
   --profile hard_surface_roi \
   --coarse path/to/coarse.glb \
   --front views/front.png --left views/left.png --back views/back.png --right views/right.png \
-  --out-dir runs/my_asset/s1_d3dv3 --dry-run
+  --out-dir runs/my_asset/s1_d3dv3 --compare-crevice-keep --dry-run
 
 # S2: Blender SLIM Low-Island UV + 4K Normal/AO/Curvature Cycles Welded-Cage Bake
 quadvox s2-unwrap-bake \
@@ -137,6 +138,18 @@ quadvox s3-lookdev \
 
 ### 2. What Does NOT Require Manual Pixel Alignment (Handled Automatically by Code)
 - **Global Scale & Canvas Centering**: `quadvox s0-preprocess` automatically extracts clean foreground bounding boxes and normalizes scale/centering (`pad_factor=1.1`), while `calibrate_s0_ortho_camera` and `compute_silhouette_alignment_warp` automatically solve per-view orthographic scale, 2D translation, and silhouette boundary alignment.
+
+---
+
+## Verification & Cloud GPU Benchmark Status
+
+- **Offline Unit & Architecture Hygiene (`pytest -v`)**: `24 passed` (`test_architecture_and_hygiene`, `test_d3dv3_4view_fusion`, `test_s2_retopo_and_uv`, `test_s0_and_s3_lookdev`, `test_cloud_resilience_and_runners`), verifying:
+  - Fixed descending-edge `_sstep` overhang `crevice_keep` vs pre-fix `legacy_unfixed` behavior via `compare_crevice_keep_preflight`, restoring vertical side-view retention (`|vn_x| > 0.70`) while suppressing downward overhangs (`vn_y < -0.58`).
+  - S2 outer `1-2 px` UV island border smoothing & clamp (`smooth_clamp_uv_island_border`) before EDT gutter dilation, eliminating border grazing spikes and enforcing unit-length normals while preserving `head_ring_dilation=16` and `pack_method="blender_concave"`.
+  - S3 optional `face_labels`-isolated `mesh_harmonic_fill` & `bake_two_band_albedo`, preventing cross-region color bleed across shared semantic boundary vertices and falling back cleanly on empty-observed semantic classes (`face_labels=None` remains backward-compatible).
+  - S1/S2 runner `--dry-run` / `--dry-run-bundle` CLI contracts (`run_d3dv3_4view.py`, `run_s2_prop.py`, `run_s2_uv_bake.py`) and zero hardcoded `/tmp` or Layer-3 token leakage.
+- **Host Dry-Run Bundle Check (`runners/run_d3dv3_4view.py --profile symmetric_humanoid --compare-crevice-keep --dry-run`)**: Passed cleanly on 4-view orthographic PNGs + normalized `1.0`m coarse GLB (`7,904,004` bytes, `1` chunk).
+- **High-SKU Colab Live Status (`A100,H100,G4`, no `L4` fallback)**: Live `run_d3dv3_4view.py` high-SKU execution was skipped in this verification cycle because pre-flight high-SKU allocation returned `HTTP 503 Service Unavailable` across all three candidate GPUs (`A100` `32.2s`, `H100` `32.3s`, `G4` `32.1s`), with remote session cleanup confirmed empty (`Active assignments: 0`).
 
 ---
 

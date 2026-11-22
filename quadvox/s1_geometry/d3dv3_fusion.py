@@ -71,6 +71,7 @@ class D3DV3FusionConfig:
     smoothing_zones: list[ZoneSmoothingSpec] = field(default_factory=list)
     domain_height_full: float | None = None
     domain_y_top_full: float = 1.0
+    crevice_keep_mode: str = "fixed"
 
 
 def _sstep(e0: float, e1: float, v):
@@ -457,6 +458,30 @@ def _rasterize_ortho_zbuf(
     return zbuf.reshape(zres, zres), px, py, depth_f
 
 
+def _compute_crevice_keep(
+    vn_y: np.ndarray,
+    vis_total: np.ndarray,
+    mode: str = "fixed",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute overhang crevice damping (`fixed`, `legacy_unfixed` pre-fix bug, or `disabled`)."""
+    keep_vis_tot = _sstep_np(1.15, 1.85, vis_total).astype(np.float32)
+    if mode == "fixed":
+        down_overhang = (
+            (1.0 - _sstep_np(-0.58, -0.22, vn_y)) * (1.0 - _sstep_np(1.85, 2.50, vis_total))
+        ).astype(np.float32)
+    elif mode == "legacy_unfixed":
+        # Exact pre-fix descending-edge clamp bug where e0 > e1 clipped denom to +1e-8.
+        t_bug = np.clip((np.asarray(vn_y, dtype=np.float64) - (-0.22)) / 1e-8, 0.0, 1.0)
+        s_bug = t_bug * t_bug * (3.0 - 2.0 * t_bug)
+        down_overhang = (s_bug * (1.0 - _sstep_np(1.85, 2.50, vis_total))).astype(np.float32)
+    elif mode == "disabled":
+        down_overhang = np.zeros_like(keep_vis_tot)
+    else:
+        raise ValueError(f"Unsupported crevice_keep_mode {mode!r}; expected 'fixed', 'legacy_unfixed', or 'disabled'")
+    crevice_keep = (keep_vis_tot * (1.0 - 0.92 * down_overhang)).astype(np.float32)
+    return crevice_keep, down_overhang
+
+
 def compute_surface_visibility_and_weights(
     verts_np: np.ndarray,
     faces_np: np.ndarray,
@@ -472,6 +497,7 @@ def compute_surface_visibility_and_weights(
     smooth_sigma_full: float = 0.006,
     roi_boxes: Sequence[ROISovereigntyBox] = (),
     smoothing_zones: Sequence[ZoneSmoothingSpec] = (),
+    crevice_keep_mode: str = "fixed",
 ) -> dict[str, Any]:
     """Compute generic 4-view surface visibility, crevice suppression, and optional Layer-2 ROI locks."""
     t0 = time.monotonic()
@@ -552,11 +578,7 @@ def compute_surface_visibility_and_weights(
 
     # 3. Overhang crevice suppression (damps side views in tight crevices -> C1 front/back fallback)
     vis_total = vis.sum(axis=1)
-    keep_vis_tot = _sstep_np(1.15, 1.85, vis_total).astype(np.float32)
-    down_overhang = (
-        (1.0 - _sstep_np(-0.58, -0.22, vn[:, 1])) * (1.0 - _sstep_np(1.85, 2.50, vis_total))
-    ).astype(np.float32)
-    crevice_keep = (keep_vis_tot * (1.0 - 0.92 * down_overhang)).astype(np.float32)
+    crevice_keep, _down_overhang = _compute_crevice_keep(vn[:, 1], vis_total, mode=crevice_keep_mode)
 
     side_keep_left = (cliff_keep[:, 2] * crevice_keep).astype(np.float32)
     side_keep_right = (cliff_keep[:, 3] * crevice_keep).astype(np.float32)
@@ -640,10 +662,14 @@ def compute_surface_visibility_and_weights(
     own_side_keep = np.where(x_full >= 0.0, side_keep_left, side_keep_right).astype(np.float32)
     crevice_damp_score = (1.0 - own_side_keep).astype(np.float32)
 
+    vert_mask = (np.abs(vn[:, 0]) > 0.70) & (np.abs(vn[:, 1]) < 0.20)
+    overhang_mask = (vn[:, 1] < -0.58) & (vis_total < 2.2)
+
     return {
         "v_norm": v_norm,
         "vn": vn,
         "vis": vis,
+        "crevice_keep": crevice_keep,
         "raw_w": raw_w_smooth,
         "w_surf": w_surf,
         "frame": frame,
@@ -663,9 +689,80 @@ def compute_surface_visibility_and_weights(
             "cliff_k": cliff_k,
             "domain_height_full": round(float(domain_height_full), 5),
             "s_to_full": round(float(s_to_full), 5),
+            "crevice_keep_mode": crevice_keep_mode,
+            "crevice_keep_mean": round(float(crevice_keep.mean()), 5),
+            "vertical_side_crevice_keep_mean": round(float(crevice_keep[vert_mask].mean()), 5) if np.any(vert_mask) else None,
+            "overhang_crevice_keep_mean": round(float(crevice_keep[overhang_mask].mean()), 5) if np.any(overhang_mask) else None,
             "roi_boxes": [b.name for b in roi_boxes],
             "elapsed_s": round(time.monotonic() - t0, 3),
         },
+    }
+
+
+def compare_crevice_keep_preflight(
+    verts_np: np.ndarray,
+    faces_np: np.ndarray,
+    *,
+    domain_height_full: float = 1.0,
+    domain_y_top_full: float = 1.0,
+    zres: int = 256,
+    roi_boxes: Sequence[ROISovereigntyBox] = (),
+    smoothing_zones: Sequence[ZoneSmoothingSpec] = (),
+) -> dict[str, Any]:
+    """Compare pre-fix (`legacy_unfixed`) vs post-fix (`fixed`) `crevice_keep` weights on a mesh."""
+    pre = compute_surface_visibility_and_weights(
+        verts_np,
+        faces_np,
+        domain_height_full=domain_height_full,
+        domain_y_top_full=domain_y_top_full,
+        zres=zres,
+        roi_boxes=roi_boxes,
+        smoothing_zones=smoothing_zones,
+        crevice_keep_mode="legacy_unfixed",
+    )
+    post = compute_surface_visibility_and_weights(
+        verts_np,
+        faces_np,
+        domain_height_full=domain_height_full,
+        domain_y_top_full=domain_y_top_full,
+        zres=zres,
+        roi_boxes=roi_boxes,
+        smoothing_zones=smoothing_zones,
+        crevice_keep_mode="fixed",
+    )
+    vn = post["vn"]
+    vis_tot = post["vis"].sum(axis=1)
+    vert_side = (np.abs(vn[:, 0]) > 0.70) & (np.abs(vn[:, 1]) < 0.20)
+    vert_partial = vert_side & (vis_tot < 2.35)
+    overhang = (vn[:, 1] < -0.58) & (vis_tot < 2.20)
+
+    def _side_w(res: dict[str, Any], mask: np.ndarray) -> float | None:
+        if not np.any(mask):
+            return None
+        return round(float((res["w_surf"][mask, 2] + res["w_surf"][mask, 3]).mean()), 5)
+
+    def _ck_mean(res: dict[str, Any], mask: np.ndarray) -> float | None:
+        if not np.any(mask):
+            return None
+        return round(float(res["crevice_keep"][mask].mean()), 5)
+
+    return {
+        "vertex_count": int(len(vn)),
+        "vertical_side_count": int(np.sum(vert_side)),
+        "vertical_partial_vis_count": int(np.sum(vert_partial)),
+        "overhang_count": int(np.sum(overhang)),
+        "crevice_keep_mean_preflight": round(float(pre["crevice_keep"].mean()), 5),
+        "crevice_keep_mean_postfix": round(float(post["crevice_keep"].mean()), 5),
+        "crevice_keep_max_abs_diff": round(float(np.abs(post["crevice_keep"] - pre["crevice_keep"]).max()), 5),
+        "vertical_side_crevice_keep_preflight": _ck_mean(pre, vert_side),
+        "vertical_side_crevice_keep_postfix": _ck_mean(post, vert_side),
+        "vertical_partial_crevice_keep_preflight": _ck_mean(pre, vert_partial),
+        "vertical_partial_crevice_keep_postfix": _ck_mean(post, vert_partial),
+        "vertical_partial_side_weight_preflight": _side_w(pre, vert_partial),
+        "vertical_partial_side_weight_postfix": _side_w(post, vert_partial),
+        "overhang_crevice_keep_preflight": _ck_mean(pre, overhang),
+        "overhang_crevice_keep_postfix": _ck_mean(post, overhang),
+        "w_surf_l1_mean_diff": round(float(np.abs(post["w_surf"] - pre["w_surf"]).mean()), 5),
     }
 
 
@@ -742,6 +839,7 @@ def compute_4view_voxel_weights(
     roi_boxes: Sequence[ROISovereigntyBox] = (),
     smoothing_zones: Sequence[ZoneSmoothingSpec] = (),
     surface_cache: dict[str, Any] | None = None,
+    crevice_keep_mode: str = "fixed",
 ) -> tuple[Any, dict[str, Any], dict[str, Any]]:
     """Interpolate surface visibility weights onto `[4, N_patches, patch_size^3]` active voxels."""
     from scipy.spatial import cKDTree
@@ -763,6 +861,7 @@ def compute_4view_voxel_weights(
             zres=zres,
             roi_boxes=roi_boxes,
             smoothing_zones=smoothing_zones,
+            crevice_keep_mode=crevice_keep_mode,
         )
     else:
         surf = surface_cache
@@ -1132,6 +1231,7 @@ def run_d3dv3_4view_fusion(
     pretrained_repo: str = "wushuang98/Direct3D-V3",
     local_files_only: bool = True,
     target_height: float = 1.0,
+    pipeline: Any = None,
 ) -> dict[str, Any]:
     """Execute end-to-end 4-view Direct3D-V3 (512 -> 1024 -> 1536) fusion on CUDA."""
     import timm
@@ -1189,16 +1289,20 @@ def run_d3dv3_4view_fusion(
             return torch.cat(features, dim=-1)
 
     t0 = time.monotonic()
-    pipe = Direct3DV3Pipeline.from_pretrained(
-        pretrained_repo,
-        torch_dtype=torch.bfloat16,
-        local_files_only=local_files_only,
-    )
-    pipe._encoder = _TimmDINOv3Extractor(dtype=pipe.dtype)
-    pipe.to("cuda")
-    verify_torch_rotations_selfcheck(pipe.device)
-    pipe._encoder.cpu()
-    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+    if pipeline is None:
+        pipe = Direct3DV3Pipeline.from_pretrained(
+            pretrained_repo,
+            torch_dtype=torch.bfloat16,
+            local_files_only=local_files_only,
+        )
+        pipe._encoder = _TimmDINOv3Extractor(dtype=pipe.dtype)
+        pipe.to("cuda")
+        verify_torch_rotations_selfcheck(pipe.device)
+        pipe._encoder.cpu()
+        torch.cuda.empty_cache()
+    else:
+        pipe = pipeline
 
     coarse = load_coarse(str(coarse_mesh_path))
     cv = np.asarray(coarse.vertices, dtype=np.float64)
@@ -1252,6 +1356,7 @@ def run_d3dv3_4view_fusion(
             domain_y_top_full=cfg.domain_y_top_full,
             roi_boxes=cfg.roi_boxes,
             smoothing_zones=cfg.smoothing_zones,
+            crevice_keep_mode=cfg.crevice_keep_mode,
         )
 
         pipe._encoder.to(pipe.device)
@@ -1310,9 +1415,14 @@ def run_d3dv3_4view_fusion(
     norm_mesh = normalize_mesh(raw_mesh, target_height=target_height)
     norm_mesh.export(str(out_glb))
     metrics = compute_mesh_metrics(norm_mesh)
+    gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
+    peak_vram_gb = round(float(torch.cuda.max_memory_allocated()) / (1024.0**3), 3) if torch.cuda.is_available() else 0.0
 
     return {
         "out_glb": str(out_glb),
+        "crevice_keep_mode": cfg.crevice_keep_mode,
+        "gpu_name": gpu_name,
+        "peak_vram_gb": peak_vram_gb,
         "elapsed_s": round(time.monotonic() - t0, 3),
         "stage_stats": stage_stats,
         "metrics": metrics.to_dict(),

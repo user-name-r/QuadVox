@@ -17,6 +17,7 @@ from typing import Any, Sequence
 import numpy as np
 from scipy import ndimage
 from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
 from scipy.sparse.linalg import spsolve
 from scipy.spatial import cKDTree
 
@@ -218,46 +219,31 @@ def rasterize_uv_attributes(
     }
 
 
-def mesh_harmonic_fill(
+def _solve_harmonic_subset(
     verts: np.ndarray,
-    faces: np.ndarray,
-    texel_pos: np.ndarray,
-    texel_face_idx: np.ndarray,
-    valid_mask: np.ndarray,
-    albedo_uv: np.ndarray,
-    observed_mask: np.ndarray,
-) -> tuple[np.ndarray, dict[str, Any]]:
-    """Fill unseen UV texels via 3D welded mesh surface harmonic interpolation (no cross-island bleed)."""
-    unseen_uv = valid_mask & (~observed_mask)
-    if not np.any(unseen_uv):
-        return albedo_uv, {"unseen_texels": 0, "method": "none"}
+    sub_faces: np.ndarray,
+    sub_face_rgb_sum: np.ndarray,
+    sub_face_cnt: np.ndarray,
+    texel_pos_sub: np.ndarray,
+    uf_sub_local: np.ndarray,
+) -> tuple[np.ndarray, int]:
+    """Solve welded-vertex Dirichlet harmonic interpolation on a single face subset."""
+    used_v, inv_sub_f = np.unique(sub_faces.ravel(), return_inverse=True)
+    sub_faces_local = inv_sub_f.reshape(-1, 3)
+    sub_verts = verts[used_v]
+    n_sv = len(sub_verts)
 
-    n_v = len(verts)
-    n_f = len(faces)
-    obs_texel_frac = float(np.sum(observed_mask)) / max(float(np.sum(valid_mask)), 1.0)
+    vert_rgb_sum = np.zeros((n_sv, 3), dtype=np.float64)
+    vert_cnt = np.zeros(n_sv, dtype=np.float64)
+    has_f = sub_face_cnt > 0
+    f_obs = sub_faces_local[has_f]
+    fc_obs = sub_face_rgb_sum[has_f] / sub_face_cnt[has_f, None]
+    for corner in range(3):
+        for c in range(3):
+            np.add.at(vert_rgb_sum[:, c], f_obs[:, corner], fc_obs[:, c])
+        np.add.at(vert_cnt, f_obs[:, corner], 1.0)
 
-    f_idx_obs = texel_face_idx[observed_mask]
-    rgb_obs = albedo_uv[observed_mask]
-    face_rgb_sum = np.zeros((n_f, 3), dtype=np.float64)
-    for c in range(3):
-        face_rgb_sum[:, c] = np.bincount(f_idx_obs, weights=rgb_obs[:, c], minlength=n_f)
-    face_cnt = np.bincount(f_idx_obs, minlength=n_f).astype(np.float64)
-
-    vert_rgb_sum = np.zeros((n_v, 3), dtype=np.float64)
-    vert_cnt = np.zeros(n_v, dtype=np.float64)
-    has_f = face_cnt > 0
-    if np.any(has_f):
-        f_obs = faces[has_f]
-        fc_obs = face_rgb_sum[has_f] / face_cnt[has_f, None]
-        for corner in range(3):
-            for c in range(3):
-                np.add.at(vert_rgb_sum[:, c], f_obs[:, corner], fc_obs[:, c])
-            np.add.at(vert_cnt, f_obs[:, corner], 1.0)
-
-    if not np.any(vert_cnt > 0):
-        return albedo_uv, {"unseen_texels": int(np.sum(unseen_uv)), "method": "fallback_empty"}
-
-    quant = np.rint(verts.astype(np.float64) * 1e5).astype(np.int64)
+    quant = np.rint(sub_verts.astype(np.float64) * 1e5).astype(np.int64)
     _, inv_weld = np.unique(quant, axis=0, return_inverse=True)
     n_w = int(inv_weld.max()) + 1
     w_rgb_sum = np.zeros((n_w, 3), dtype=np.float64)
@@ -268,7 +254,7 @@ def mesh_harmonic_fill(
     w_val = np.zeros((n_w, 3), dtype=np.float64)
     w_val[w_known] = w_rgb_sum[w_known] / w_cnt[w_known, None]
 
-    wf = inv_weld[faces]
+    wf = inv_weld[sub_faces_local]
     edges = np.vstack([
         np.stack([wf[:, 0], wf[:, 1]], axis=1),
         np.stack([wf[:, 1], wf[:, 2]], axis=1),
@@ -278,66 +264,151 @@ def mesh_harmonic_fill(
     edges = edges[edges[:, 0] != edges[:, 1]]
     edges = np.unique(edges, axis=0)
 
-    w_pos = np.zeros((n_w, 3), dtype=np.float64)
-    w_pos_cnt = np.bincount(inv_weld, minlength=n_w)
-    for c in range(3):
-        w_pos[:, c] = np.bincount(inv_weld, weights=verts[:, c], minlength=n_w) / np.maximum(w_pos_cnt, 1)
-
-    elen = np.linalg.norm(w_pos[edges[:, 0]] - w_pos[edges[:, 1]], axis=1)
-    ew = 1.0 / np.maximum(elen, 1e-4)
-
-    rows = np.concatenate([edges[:, 0], edges[:, 1]])
-    cols = np.concatenate([edges[:, 1], edges[:, 0]])
-    vals = np.concatenate([ew, ew])
-    adj = coo_matrix((vals, (rows, cols)), shape=(n_w, n_w)).tocsr()
-    deg = np.asarray(adj.sum(axis=1)).ravel()
-
     unknown_idx = np.flatnonzero(~w_known)
     if len(unknown_idx) > 0:
-        L_full = coo_matrix((deg, (np.arange(n_w), np.arange(n_w))), shape=(n_w, n_w)).tocsr() - adj
-        is_unk = ~w_known
-        mask_unk_diag = coo_matrix((is_unk.astype(np.float64), (np.arange(n_w), np.arange(n_w))), shape=(n_w, n_w))
-        mask_kno_diag = coo_matrix((w_known.astype(np.float64), (np.arange(n_w), np.arange(n_w))), shape=(n_w, n_w))
-        A_sys = (mask_unk_diag @ L_full + mask_kno_diag).tocsc()
-        zero_deg = is_unk & (deg <= 1e-12)
-        if np.any(zero_deg):
-            w_val[zero_deg] = w_val[w_known].mean(axis=0)
-            mask_z = coo_matrix((zero_deg.astype(np.float64), (np.arange(n_w), np.arange(n_w))), shape=(n_w, n_w))
-            A_sys = (A_sys + mask_z).tocsc()
-        rhs = np.where(w_known[:, None], w_val, 0.0)
-        if np.any(zero_deg):
-            rhs[zero_deg] = w_val[zero_deg]
-        solved = spsolve(A_sys, rhs)
-        if solved.ndim == 1:
-            solved = solved[:, None]
-        w_solved = np.clip(solved, 0.0, 1.0).astype(np.float32)
+        w_pos = np.zeros((n_w, 3), dtype=np.float64)
+        w_pos_cnt = np.bincount(inv_weld, minlength=n_w)
+        for c in range(3):
+            w_pos[:, c] = np.bincount(inv_weld, weights=sub_verts[:, c], minlength=n_w) / np.maximum(w_pos_cnt, 1)
+
+        if len(edges) > 0:
+            elen = np.linalg.norm(w_pos[edges[:, 0]] - w_pos[edges[:, 1]], axis=1)
+            ew = 1.0 / np.maximum(elen, 1e-4)
+            rows = np.concatenate([edges[:, 0], edges[:, 1]])
+            cols = np.concatenate([edges[:, 1], edges[:, 0]])
+            vals = np.concatenate([ew, ew])
+            adj = coo_matrix((vals, (rows, cols)), shape=(n_w, n_w)).tocsr()
+        else:
+            adj = coo_matrix((n_w, n_w), dtype=np.float64).tocsr()
+
+        n_comp, comp_ids = connected_components(adj, directed=False)
+        comp_has_known = np.zeros(n_comp, dtype=bool)
+        if np.any(w_known):
+            np.logical_or.at(comp_has_known, comp_ids[w_known], True)
+        unseeded_mask = (~w_known) & (~comp_has_known[comp_ids])
+        if np.any(unseeded_mask):
+            w_val[unseeded_mask] = w_val[w_known].mean(axis=0)
+        w_fixed = w_known | unseeded_mask
+        is_unk = ~w_fixed
+
+        if np.any(is_unk):
+            deg = np.asarray(adj.sum(axis=1)).ravel()
+            L_full = coo_matrix((deg, (np.arange(n_w), np.arange(n_w))), shape=(n_w, n_w)).tocsr() - adj
+            mask_unk_diag = coo_matrix((is_unk.astype(np.float64), (np.arange(n_w), np.arange(n_w))), shape=(n_w, n_w))
+            mask_kno_diag = coo_matrix((w_fixed.astype(np.float64), (np.arange(n_w), np.arange(n_w))), shape=(n_w, n_w))
+            A_sys = (mask_unk_diag @ L_full + mask_kno_diag).tocsc()
+            rhs = np.where(w_fixed[:, None], w_val, 0.0)
+            solved = spsolve(A_sys, rhs)
+            if solved.ndim == 1:
+                solved = solved[:, None]
+            w_solved = np.clip(solved, 0.0, 1.0).astype(np.float32)
+        else:
+            w_solved = np.clip(w_val, 0.0, 1.0).astype(np.float32)
     else:
-        w_solved = w_val.astype(np.float32)
+        w_solved = np.clip(w_val, 0.0, 1.0).astype(np.float32)
 
     v_solved = w_solved[inv_weld]
+    f_verts = sub_faces_local[uf_sub_local]
+    d0 = 1.0 / np.maximum(np.linalg.norm(texel_pos_sub - sub_verts[f_verts[:, 0]], axis=1), 1e-5)
+    d1 = 1.0 / np.maximum(np.linalg.norm(texel_pos_sub - sub_verts[f_verts[:, 1]], axis=1), 1e-5)
+    d2 = 1.0 / np.maximum(np.linalg.norm(texel_pos_sub - sub_verts[f_verts[:, 2]], axis=1), 1e-5)
+    ds = d0 + d1 + d2
+    col_fill = (
+        (d0 / ds)[:, None] * v_solved[f_verts[:, 0]]
+        + (d1 / ds)[:, None] * v_solved[f_verts[:, 1]]
+        + (d2 / ds)[:, None] * v_solved[f_verts[:, 2]]
+    )
+    return np.clip(col_fill, 0.0, 1.0).astype(np.float32), int(len(unknown_idx))
+
+
+def mesh_harmonic_fill(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    texel_pos: np.ndarray,
+    texel_face_idx: np.ndarray,
+    valid_mask: np.ndarray,
+    albedo_uv: np.ndarray,
+    observed_mask: np.ndarray,
+    face_labels: np.ndarray | None = None,
+    empty_label_rgb: tuple[float, float, float] = (0.5, 0.5, 0.5),
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Fill unseen UV texels via 3D welded mesh surface harmonic interpolation.
+
+    When `face_labels` is provided (optional per-face semantic ID array of length `len(faces)`),
+    harmonic solves and vertex welding are isolated strictly within each semantic label so
+    Laplace edges never cross semantic boundaries and empty-observed classes fall back cleanly
+    to `empty_label_rgb` without cross-region color bleed.
+    """
+    unseen_uv = valid_mask & (~observed_mask)
+    if not np.any(unseen_uv):
+        return albedo_uv, {"unseen_texels": 0, "method": "none"}
+
+    n_f = len(faces)
+    fl: np.ndarray | None = None
+    if face_labels is not None:
+        fl = np.asarray(face_labels)
+        if fl.shape != (n_f,):
+            raise ValueError(f"face_labels shape {fl.shape} does not match faces count ({n_f},)")
+
+    obs_texel_frac = float(np.sum(observed_mask)) / max(float(np.sum(valid_mask)), 1.0)
+
+    f_idx_obs = texel_face_idx[observed_mask]
+    rgb_obs = albedo_uv[observed_mask]
+    valid_obs = (f_idx_obs >= 0) & (f_idx_obs < n_f)
+    f_idx_obs = f_idx_obs[valid_obs]
+    rgb_obs = rgb_obs[valid_obs]
+
+    face_rgb_sum = np.zeros((n_f, 3), dtype=np.float64)
+    for c in range(3):
+        face_rgb_sum[:, c] = np.bincount(f_idx_obs, weights=rgb_obs[:, c], minlength=n_f)
+    face_cnt = np.bincount(f_idx_obs, minlength=n_f).astype(np.float64)
+
+    if fl is None and not np.any(face_cnt > 0):
+        return albedo_uv, {"unseen_texels": int(np.sum(unseen_uv)), "method": "fallback_empty"}
+
     out = albedo_uv.copy()
     uy, ux = np.where(unseen_uv)
     uf = texel_face_idx[uy, ux]
-    valid_f = uf >= 0
+    valid_f = (uf >= 0) & (uf < n_f)
     uy, ux, uf = uy[valid_f], ux[valid_f], uf[valid_f]
+
+    total_unknown_verts = 0
+    empty_observed_labels: list[int] = []
     if len(uf) > 0:
-        f_verts = faces[uf]
         tp = texel_pos[uy, ux]
-        d0 = 1.0 / np.maximum(np.linalg.norm(tp - verts[f_verts[:, 0]], axis=1), 1e-5)
-        d1 = 1.0 / np.maximum(np.linalg.norm(tp - verts[f_verts[:, 1]], axis=1), 1e-5)
-        d2 = 1.0 / np.maximum(np.linalg.norm(tp - verts[f_verts[:, 2]], axis=1), 1e-5)
-        ds = d0 + d1 + d2
-        col_fill = (
-            (d0 / ds)[:, None] * v_solved[f_verts[:, 0]]
-            + (d1 / ds)[:, None] * v_solved[f_verts[:, 1]]
-            + (d2 / ds)[:, None] * v_solved[f_verts[:, 2]]
-        )
-        out[uy, ux] = np.clip(col_fill, 0.0, 1.0)
+        if fl is None:
+            col_fill, n_unk = _solve_harmonic_subset(verts, faces, face_rgb_sum, face_cnt, tp, uf)
+            out[uy, ux] = col_fill
+            total_unknown_verts = n_unk
+        else:
+            unseen_labels = fl[uf]
+            neutral = np.asarray(empty_label_rgb, dtype=np.float32)
+            for lbl in np.unique(unseen_labels):
+                u_mask = unseen_labels == lbl
+                lbl_faces = np.flatnonzero(fl == lbl)
+                sub_face_cnt = face_cnt[lbl_faces]
+                if not np.any(sub_face_cnt > 0):
+                    out[uy[u_mask], ux[u_mask]] = neutral
+                    empty_observed_labels.append(int(lbl))
+                    continue
+                uf_local = np.searchsorted(lbl_faces, uf[u_mask])
+                col_fill, n_unk = _solve_harmonic_subset(
+                    verts,
+                    faces[lbl_faces],
+                    face_rgb_sum[lbl_faces],
+                    sub_face_cnt,
+                    tp[u_mask],
+                    uf_local,
+                )
+                out[uy[u_mask], ux[u_mask]] = col_fill
+                total_unknown_verts += n_unk
 
     return out, {
         "unseen_texels": int(np.sum(unseen_uv)),
         "observed_texel_frac": round(obs_texel_frac, 4),
-        "unknown_welded_verts": int(len(unknown_idx)),
+        "unknown_welded_verts": int(total_unknown_verts),
+        "label_isolated": fl is not None,
+        "empty_observed_labels": empty_observed_labels,
         "method": "3d_welded_harmonic",
     }
 
@@ -425,6 +496,8 @@ def bake_two_band_albedo(
     e2_aux_threshold: float = 0.50,
     run_mesh_fill: bool = True,
     run_gutter_pad: bool = True,
+    face_labels: np.ndarray | None = None,
+    isolate_harmonic_by_label: bool = True,
 ) -> dict[str, Any]:
     """Two-Band dual-frequency backprojection with optional Layer-2 ROI sovereignty lock,
     E2 blind-spot gating, 3D harmonic hole fill, and exact EDT gutter dilation.
@@ -554,8 +627,22 @@ def bake_two_band_albedo(
 
     fill_stats: dict[str, Any] = {"unseen_texels": int(np.sum(valid_mask & ~observed_mask)), "method": "skipped"}
     if run_mesh_fill:
+        resolved_face_labels: np.ndarray | None = None
+        if isolate_harmonic_by_label:
+            candidate_labels = face_labels if face_labels is not None else mesh_data.get("face_labels")
+            if candidate_labels is not None:
+                arr_labels = np.asarray(candidate_labels)
+                if arr_labels.shape == (len(faces),):
+                    resolved_face_labels = arr_labels
         albedo_uv, fill_stats = mesh_harmonic_fill(
-            verts, faces, texel_pos, texel_face_idx, valid_mask, albedo_uv, observed_mask
+            verts,
+            faces,
+            texel_pos,
+            texel_face_idx,
+            valid_mask,
+            albedo_uv,
+            observed_mask,
+            face_labels=resolved_face_labels,
         )
 
     if run_gutter_pad:
