@@ -165,7 +165,9 @@ def build_sdf_mesh(
             verts = np.asarray(o3_m.vertices, dtype=np.float64)
             faces = np.asarray(o3_m.triangles, dtype=np.int64)
         except ImportError:
-            pass
+            from quadvox.s2_retopo.qem import decimate_pyfqmr
+
+            verts, faces = decimate_pyfqmr(verts, faces, int(target_faces))
 
     if newton_iters > 0 and len(verts) > 0:
         eps = 1e-4

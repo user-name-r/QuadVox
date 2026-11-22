@@ -1568,6 +1568,7 @@ def _prepare_semantic_part_charts(
     cid: int,
     *,
     is_prop: bool = False,
+    crease_angle_deg: float = 48.0,
 ) -> list[dict[str, Any]]:
     """Build low-island anatomical/crease-aware charts with cut-graph seams per class."""
     import numpy as np
@@ -1716,7 +1717,9 @@ def _prepare_semantic_part_charts(
             continue
 
         if is_prop or cid == 3:
-            sub_lbl = _partition_prop_planar_charts(cv, cf_ori, fn, crease_deg=48.0, max_chart_faces=600, min_chart_faces=24)
+            sub_lbl = _partition_prop_planar_charts(
+                cv, cf_ori, fn, crease_deg=float(crease_angle_deg), max_chart_faces=600, min_chart_faces=24
+            )
             for sid in sorted(np.unique(sub_lbl).tolist()):
                 mask_s = sub_lbl == sid
                 scf_raw = cf_orig[mask_s]
@@ -3204,6 +3207,7 @@ def _unwrap_via_blender_slim(
     zero_overlap_refine: bool = False,
     tex_size: int = 4096,
     min_island_px: int = 16,
+    crease_angle_deg: float = 48.0,
 ) -> list[dict[str, Any]]:
     """Run semantic/crease seam-guided Blender SLIM+ABF low-island UV pipeline."""
     import numpy as np
@@ -3217,7 +3221,14 @@ def _unwrap_via_blender_slim(
         rm = np.full(len(verts), -1, dtype=np.int64)
         rm[u] = np.arange(len(u), dtype=np.int64)
         raw_charts.extend(
-            _prepare_semantic_part_charts(verts[u], normals_orig[u], rm[sf_g], cid, is_prop=is_prop)
+            _prepare_semantic_part_charts(
+                verts[u],
+                normals_orig[u],
+                rm[sf_g],
+                cid,
+                is_prop=is_prop,
+                crease_angle_deg=float(crease_angle_deg),
+            )
         )
 
     work_dir = scratch_parent / f"._blender_uv_tmp_{os.getpid()}"
@@ -3324,6 +3335,7 @@ def unwrap_part_aware(
     min_island_px: int = 16,
     min_true_gap_px: float = 6.0,
     out_labels_npz: str | Path | None = None,
+    crease_angle_deg: float = 48.0,
 ) -> PartAwareUnwrapResult:
     """Part-aware low-island UV unwrap preserving head/face texel priority and >= padding_px gaps.
 
@@ -3451,6 +3463,7 @@ def unwrap_part_aware(
             zero_overlap_refine=bool(zero_overlap_refine),
             tex_size=int(tex_size),
             min_island_px=int(min_island_px),
+            crease_angle_deg=float(crease_angle_deg),
         )
     else:
         all_islands = []
@@ -4474,8 +4487,12 @@ def _run_bake_4k_in_blender(
                 low_face_cids = np.asarray(ld["face_labels"], dtype=np.int32).reshape(-1)
             if len(low_face_cids) != n_low_faces:
                 raise ValueError(f"low_face_cids length {len(low_face_cids)} != lowpoly polygons {n_low_faces}")
+        elif len(low_obj.material_slots) >= 1:
+            mat_indices = np.empty(n_low_faces, dtype=np.int32)
+            low_obj.data.polygons.foreach_get("material_index", mat_indices)
+            low_face_cids = mat_indices.astype(np.int32)
         else:
-            raise ValueError("isolated_part_bake=True requires 7 semantic material slots or valid low_labels_npz.")
+            low_face_cids = np.zeros(n_low_faces, dtype=np.int32)
 
         n_high_verts = len(high_obj.data.vertices)
         high_co = np.empty(n_high_verts * 3, dtype=np.float32)
@@ -4859,7 +4876,10 @@ def _run_bake_4k_in_blender(
                 if mdata.users == 0:
                     bpy.data.meshes.remove(mdata)
 
-        for cid, cname in CANONICAL_MATERIAL_SLOTS:
+        slot_name_map = dict(CANONICAL_MATERIAL_SLOTS)
+        present_part_cids = sorted(int(c) for c in np.unique(low_face_cids))
+        for cid in present_part_cids:
+            cname = slot_name_map.get(cid, f"Mat_{cid:02d}_Part")
             _bake_one_part(cid, cname, use_discrete_curv=False)
 
         if np.any(comp_miss_mask):

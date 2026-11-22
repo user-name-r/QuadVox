@@ -11,6 +11,8 @@ from quadvox.contracts import CoarseSpliceSpec, ROISovereigntyBox
 from quadvox.s1_geometry.coarse_splice import compute_splice_blend_weights
 from quadvox.s1_geometry.d3dv3_fusion import (
     VIEW_ORDER,
+    _sstep,
+    _sstep_np,
     build_view_rotation,
     compute_4view_voxel_weights,
     compute_step_beta_and_cfg,
@@ -113,10 +115,21 @@ def test_surface_and_voxel_weights_layer1_vs_layer2_roi() -> None:
 
 
 def test_step_beta_cfg_schedule_and_sharpening() -> None:
+    from quadvox.s1_geometry.d3dv3_fusion import _sstep_np
+
+    # Verify _sstep_np works for both ascending (e0 < e1) and descending (e0 > e1) overhang curves.
+    vals = np.array([0.5, -0.10, -0.22, -0.40, -0.58, -0.90], dtype=np.float32)
+    down = _sstep_np(-0.22, -0.58, vals)
+    assert float(down[0]) == 0.0 and float(down[1]) == 0.0 and float(down[2]) == 0.0
+    assert 0.45 <= float(down[3]) <= 0.55
+    assert abs(float(down[4]) - 1.0) < 1e-6 and float(down[5]) == 1.0
+
     b0, c0 = compute_step_beta_and_cfg(0.2, stage=1536, guidance_scale=7.0, cfg_interval=(0.0, 1.0))
-    b1, c1 = compute_step_beta_and_cfg(0.85, stage=1536, guidance_scale=7.0, cfg_interval=(0.0, 1.0))
+    b_mid, c_mid = compute_step_beta_and_cfg(0.86, stage=1536, guidance_scale=7.0, cfg_interval=(0.0, 1.0))
+    b1, c1 = compute_step_beta_and_cfg(0.999, stage=1536, guidance_scale=7.0, cfg_interval=(0.0, 1.0))
     assert b0 == 1.0 and c0 == 7.0
-    assert b1 > 3.0 and c1 < 7.0
+    assert b_mid > 3.0 and abs(c_mid - 5.25) < 0.05  # Cosine midpoint at frac_c = 0.5
+    assert b1 > 5.0 and abs(c1 - 3.5) < 0.05
 
     w = np.array([[[0.7, 0.3], [0.2, 0.8]], [[0.0, 0.0], [0.5, 0.5]], [[0.3, 0.7], [0.3, 0.2]], [[0.0, 0.0], [0.0, 0.0]]], dtype=np.float32)
     w /= w.sum(axis=0, keepdims=True)
@@ -153,3 +166,32 @@ def test_coarse_splice_blend_weights_and_sdf_mesher() -> None:
     )
     assert mesh.is_watertight
     assert len(mesh.faces) > 200
+
+
+def test_sstep_descending_and_crevice_keep_preserves_vertical_sides() -> None:
+    vals = np.array([0.5, 0.0, -0.22, -0.40, -0.58, -0.9], dtype=np.float32)
+    desc = _sstep_np(-0.22, -0.58, vals)
+    expected = 1.0 - _sstep_np(-0.58, -0.22, vals)
+    assert np.allclose(desc, expected, atol=1e-6)
+    assert abs(float(desc[1]) - 0.0) < 1e-6  # vn_y = 0.0 (vertical side) -> not downward overhang
+    assert abs(float(desc[3]) - 0.5) < 1e-6  # midpoint -0.40
+    assert abs(float(desc[4]) - 1.0) < 1e-6  # vn_y <= -0.58 (true downward overhang)
+
+    try:
+        import torch  # type: ignore
+
+        t_desc = _sstep(-0.22, -0.58, torch.tensor(vals))
+        assert np.allclose(t_desc.numpy(), expected, atol=1e-6)
+    except ImportError:
+        pass
+
+    sphere = trimesh.creation.icosphere(subdivisions=3, radius=0.45)
+    verts = np.asarray(sphere.vertices, dtype=np.float32)
+    verts[:, 1] += 0.50
+    faces = np.asarray(sphere.faces, dtype=np.int32)
+    res = compute_surface_visibility_and_weights(verts, faces, zres=128, roi_boxes=())
+    w_surf = res["w_surf"]
+    vnorms = np.asarray(sphere.vertex_normals, dtype=np.float32)
+    vertical_left = (vnorms[:, 0] > 0.85) & (np.abs(vnorms[:, 1]) < 0.15)
+    assert int(vertical_left.sum()) >= 5
+    assert float(w_surf[vertical_left, 2].mean()) >= 0.70

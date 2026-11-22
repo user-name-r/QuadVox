@@ -101,7 +101,7 @@ VIEW_SPECS: tuple[dict[str, Any], ...] = (
     },
     {
         "key": "head",
-        "label": "HEAD CLOSE-UP",
+        "label": "UPPER CLOSE-UP",
         "location": (0.25, -1.04, 0.87),
         "target": (0.0, 0.0, 0.86),
         "ortho": False,

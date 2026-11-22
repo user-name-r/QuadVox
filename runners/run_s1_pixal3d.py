@@ -251,7 +251,7 @@ def _build_upload_bundle(
         "        tf.extractall(work, filter='data')\n"
         "    else:\n"
         "        tf.extractall(work)\n"
-        "runner = work / 'scripts' / 'colab_remote_runner.py'\n"
+        "runner = work / 'runners' / 'colab_s1_pixal3d_worker.py'\n"
         "env = os.environ.copy()\n"
         "prev_pp = env.get('PYTHONPATH', '')\n"
         "env['PYTHONPATH'] = f'{work}:{prev_pp}' if prev_pp else str(work)\n"
@@ -262,7 +262,7 @@ def _build_upload_bundle(
         "    print(line, end='', flush=True)\n"
         "rc = proc.wait()\n"
         "if rc != 0:\n"
-        "    raise RuntimeError(f'colab_remote_runner failed with exit code {rc}')\n"
+        "    raise RuntimeError(f'colab_s1_pixal3d_worker failed with exit code {rc}')\n"
         "print('[colab-exec-entry] ' + 'STATUS=OK', flush=True)\n",
         encoding="utf-8",
     )
@@ -621,10 +621,10 @@ def execute_job(
     meta_path = out_dir / "meta.json"
     raw_meta = json.loads(meta_path.read_text(encoding="utf-8"))
     raw_meta = _rewrite_remote_paths(raw_meta, out_dir)
-    if allocated_gpu and not raw_meta.get("colab_gpu"):
-        raw_meta["colab_gpu"] = allocated_gpu
-    elif allocated_gpu:
-        raw_meta["colab_gpu"] = f"{allocated_gpu} ({raw_meta['colab_gpu']})"
+    if allocated_gpu and not raw_meta.get("gpu_name"):
+        raw_meta["gpu_name"] = allocated_gpu
+    elif allocated_gpu and allocated_gpu not in str(raw_meta.get("gpu_name", "")):
+        raw_meta["gpu_name"] = f"{allocated_gpu} ({raw_meta['gpu_name']})"
     meta = RunMeta.from_dict(raw_meta)
     meta.write_json(meta_path)
     return meta
@@ -776,13 +776,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         pad_factor=args.pad_factor,
     )
     project_back = float(args.project_back if args.project_back is not None else rep.get("cellocut_project_back", 0.5))
-    remesh_res = int(args.cellocut_res if args.cellocut_res is not None else rep.get("cellocut_resolution", 1024))
-    remesh_fill = float(args.cellocut_fill if args.cellocut_fill is not None else rep.get("cellocut_fill", 20.0))
-    remesh_band = float(args.cellocut_band if args.cellocut_band is not None else rep.get("cellocut_band", 1.0))
-    c_qef = bool(args.cellocut_qef if args.cellocut_qef is not None else rep.get("cellocut_qef", False))
-    s_iters = int(args.cellocut_smooth_iters if args.cellocut_smooth_iters is not None else rep.get("cellocut_smooth_iters", 0))
-    min_comp = float(rep.get("min_component_area_rel", 0.005))
-    weld_eps = float(rep.get("weld_eps_rel", 1e-10))
+    remesh_res = int(args.remesh_resolution if args.remesh_resolution is not None else rep.get("cellocut_resolution", 1024))
+    remesh_fill = float(args.remesh_fill if args.remesh_fill is not None else rep.get("cellocut_fill", 20.0))
+    remesh_band = float(args.remesh_band if args.remesh_band is not None else rep.get("cellocut_band", 1.0))
+    c_qef = bool(args.qef if args.qef is not None else rep.get("cellocut_qef", False))
+    s_iters = int(args.smooth_iters if args.smooth_iters is not None else rep.get("cellocut_smooth_iters", 0))
+    min_comp = float(args.min_component_area_rel if args.min_component_area_rel is not None else rep.get("min_component_area_rel", 0.005))
+    weld_eps = float(args.weld_eps_rel if args.weld_eps_rel is not None else rep.get("weld_eps_rel", 1e-10))
     if is_bench:
         res = run_benchmark(
             job,

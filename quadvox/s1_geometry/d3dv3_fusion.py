@@ -74,12 +74,16 @@ class D3DV3FusionConfig:
 
 
 def _sstep(e0: float, e1: float, v):
-    t = ((v - e0) / max(e1 - e0, 1e-8)).clamp(0.0, 1.0)
+    diff = float(e1) - float(e0)
+    denom = diff if abs(diff) >= 1e-8 else (1e-8 if diff >= 0.0 else -1e-8)
+    t = ((v - e0) / denom).clamp(0.0, 1.0)
     return t * t * (3.0 - 2.0 * t)
 
 
 def _sstep_np(e0, e1, v):
-    t = np.clip((v - e0) / np.maximum(e1 - e0, 1e-8), 0.0, 1.0)
+    diff = np.asarray(e1, dtype=np.float64) - np.asarray(e0, dtype=np.float64)
+    denom = np.where(diff >= 0.0, np.maximum(diff, 1e-8), np.minimum(diff, -1e-8))
+    t = np.clip((v - e0) / denom, 0.0, 1.0)
     return t * t * (3.0 - 2.0 * t)
 
 
@@ -550,7 +554,7 @@ def compute_surface_visibility_and_weights(
     vis_total = vis.sum(axis=1)
     keep_vis_tot = _sstep_np(1.15, 1.85, vis_total).astype(np.float32)
     down_overhang = (
-        _sstep_np(-0.22, -0.58, vn[:, 1]) * (1.0 - _sstep_np(1.85, 2.50, vis_total))
+        (1.0 - _sstep_np(-0.58, -0.22, vn[:, 1])) * (1.0 - _sstep_np(1.85, 2.50, vis_total))
     ).astype(np.float32)
     crevice_keep = (keep_vis_tot * (1.0 - 0.92 * down_overhang)).astype(np.float32)
 
@@ -964,7 +968,8 @@ def compute_step_beta_and_cfg(
         cfg_t = float(guidance_scale)
     else:
         frac_c = min(1.0, max(0.0, (t_val - cfg_decay_t_start) / max(high - cfg_decay_t_start, 1e-6)))
-        cfg_t = float(guidance_scale) + (float(cfg_late_min) - float(guidance_scale)) * frac_c
+        cos_w = 0.5 * (1.0 - math.cos(math.pi * frac_c))
+        cfg_t = float(guidance_scale) + (float(cfg_late_min) - float(guidance_scale)) * cos_w
     return float(beta), float(cfg_t)
 
 

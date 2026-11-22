@@ -63,7 +63,7 @@
   - `lato2_repair.py`：针对硬表面 `LATO.2` 低模输出的几何清理（共面重叠面剔除、微孔封堵、全局法线朝向一致性修正）。
   - `quad_retopo.py`：`ReQuad`、`QuadWild` 与 `QuadriFlow` 子进程封装，支持第二层 `symmetry_x` 对称开关（默认 `False`）。
   - `slim_uv_bake.py`：折痕引导的 Blender 5.3 `MINIMUM_STRETCH`（SLIM）低岛数 UV 展开，以及基于焊合膨胀笼罩（`WeldedSmoothBakeCage`）的 4K Cycles 法线、AO 与曲率烘焙。
-- **Stage 3 — 区域保护去光、双频反投影与跨接缝三维流形谐波补洞**
-  - `delight.py`：带保护掩码曝光与色度约束的区域保护去光。
+- **Stage 3 — 区域保护去光混合、双频反投影与跨接缝三维流形谐波补洞**
+  - `delight.py`：内置跨视角受限曝光/白平衡匹配（`constrained_exposure_match`），并支持对外部去光预处理视图（`--delighted-dir`）执行带保护掩码的区域融合（`apply_region_protected_delight`）。
   - `backproject.py`：高低频分离的 `Two-Band` 多视角反投影（`low_power=4.0`、`detail_power=32.0`）、第二层 `ROISovereigntyBox` 视角优先级锁定、在焊合三维网格拓扑上直接求解稀疏 Dirichlet Laplace 方程的**三维流形谐波补洞**，以及基于欧氏距离变换（EDT）的 UV 接缝外扩填充（Gutter Padding）。
-  - `materials.py` 与 `studio_export.py`：基于曲率/AO 的硬表面金属磨边与暗缝积灰 PBR 派生（或通用 ORM 贴图派生），并通过 Blender 5.3 Cycles 导出标准 glTF 2.0 `.glb` 资产。
+  - `materials.py` 与 `studio_export.py`：内置基于曲率/AO 的硬表面金属磨边与暗缝积灰 PBR 派生及通用 ORM 贴图生成（可选接入外部 `Marigold-IID` 贴图），并通过 Blender 5.3 Cycles 导出标准 glTF 2.0 `.glb` 资产。

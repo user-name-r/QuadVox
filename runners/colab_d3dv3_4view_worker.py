@@ -45,26 +45,55 @@ def _sha256_file(path: Path) -> str:
 
 def _package_outputs(outputs_dir: Path) -> dict[str, Any]:
     bundle = outputs_dir / "outputs_bundle.tar.gz"
+    if bundle.exists():
+        bundle.unlink()
     with tarfile.open(bundle, "w:gz") as tf:
         for p in sorted(outputs_dir.iterdir()):
             if p.name.startswith("outputs_bundle") or p.name == "output_manifest.json":
                 continue
             tf.add(p, arcname=p.name, recursive=True)
 
+    total_size = bundle.stat().st_size
+    bundle_sha = _sha256_file(bundle)
     chunks: list[dict[str, Any]] = []
-    idx = 0
-    with bundle.open("rb") as src:
-        while True:
-            data = src.read(MAX_CHUNK_BYTES)
-            if not data:
-                break
-            part_name = f"outputs_bundle.tar.gz.part{idx:03d}"
-            part_path = outputs_dir / part_name
-            part_path.write_bytes(data)
-            chunks.append({"name": part_name, "bytes": len(data), "sha256": _sha256_file(part_path)})
-            idx += 1
+    if total_size <= MAX_CHUNK_BYTES:
+        chunks.append(
+            {
+                "name": bundle.name,
+                "size": total_size,
+                "bytes": total_size,
+                "sha256": bundle_sha,
+            }
+        )
+    else:
+        idx = 0
+        with bundle.open("rb") as src:
+            while True:
+                data = src.read(MAX_CHUNK_BYTES)
+                if not data:
+                    break
+                part_name = f"outputs_bundle.tar.gz.part{idx:03d}"
+                part_path = outputs_dir / part_name
+                part_path.write_bytes(data)
+                chunks.append(
+                    {
+                        "name": part_name,
+                        "size": len(data),
+                        "bytes": len(data),
+                        "sha256": _sha256_file(part_path),
+                    }
+                )
+                idx += 1
+        bundle.unlink()
 
-    manifest = {"bundle_sha256": _sha256_file(bundle), "chunks": chunks}
+    manifest = {
+        "archive_name": bundle.name,
+        "sha256": bundle_sha,
+        "bundle_sha256": bundle_sha,
+        "total_size": total_size,
+        "max_chunk_bytes": MAX_CHUNK_BYTES,
+        "chunks": chunks,
+    }
     (outputs_dir / "output_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return manifest
 
@@ -114,6 +143,16 @@ def run_worker(spec: dict[str, Any]) -> dict[str, Any]:
         local_files_only=False,
         target_height=float(s1.get("target_height", 1.0)),
     )
+    repair_cfg = s1.get("repair") or {}
+    if bool(repair_cfg.get("post_fusion_inplace_clean", False)) and out_glb.is_file():
+        from quadvox.s1_geometry.repair import inplace_clean_glb, normalize_glb
+
+        cleaned_tmp = OUTPUTS_DIR / "._fused_1536_cleaned.glb"
+        clean_glb = OUTPUTS_DIR / "fused_1536_clean.glb"
+        inplace_clean_glb(out_glb, cleaned_tmp)
+        normalize_glb(cleaned_tmp, clean_glb, target_height=float(s1.get("target_height", 1.0)))
+        cleaned_tmp.unlink(missing_ok=True)
+        res["cleaned_glb"] = str(clean_glb)
     (OUTPUTS_DIR / "d3dv3_report.json").write_text(json.dumps(res, indent=2) + "\n", encoding="utf-8")
     _package_outputs(OUTPUTS_DIR)
     return res

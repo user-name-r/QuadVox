@@ -47,6 +47,7 @@ def _cmd_s0_preprocess(args: argparse.Namespace) -> int:
         size=int(args.view_size or s0_cfg.get("view_size", 1024)),
         fov_deg=float(args.fov_deg or s0_cfg.get("fov_deg", 20.0)),
         pad_factor=float(args.pad_factor or s0_cfg.get("pad_factor", 1.1)),
+        matte_bg=bool(args.matte_bg),
     )
     print(json.dumps(manifest, indent=2, ensure_ascii=False))
     return 0
@@ -161,6 +162,7 @@ def _cmd_s2_unwrap_bake(args: argparse.Namespace) -> int:
         uv_method=str(args.uv_method or s2.get("uv_method", "blender_slim")),
         asset_type=str(args.asset_type or prof.asset_type),
         blender_bin=args.blender_bin,
+        crease_angle_deg=float(args.crease_angle_deg or s2.get("crease_angle_deg", 39.0)),
     )
     bake_res = bake_4k_maps_blender(
         args.high_mesh,
@@ -190,17 +192,101 @@ def _cmd_s2_lato2_repair(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_s2_qem(args: argparse.Namespace) -> int:
+    from quadvox.s2_retopo.qem import decimate_mesh_file
+
+    prof = load_profile_config(args.profile)
+    target_faces = int(args.target_faces or prof.s2.get("target_faces", 25000))
+    res = decimate_mesh_file(
+        args.input,
+        args.output,
+        target_faces=target_faces,
+        backend=args.backend,
+    )
+    print(json.dumps(res.to_dict(), indent=2))
+    return 0
+
+
+def _cmd_s2_quad_retopo(args: argparse.Namespace) -> int:
+    from quadvox.s2_retopo.quad_retopo import build_requad_blender_cmd
+
+    prof = load_profile_config(args.profile)
+    s2 = prof.s2
+    sym_x = bool(args.symmetry_x if args.symmetry_x is not None else s2.get("symmetry_x", False))
+    target_quads = int(args.target_faces or s2.get("target_faces", 35000))
+    cmd = build_requad_blender_cmd(
+        args.input,
+        args.output,
+        target_quads=target_quads,
+        sym_x=sym_x,
+        labels_npz_path=args.labels_npz,
+        blender_bin=Path(args.blender_bin),
+    )
+    if args.dry_run:
+        print(json.dumps({"dry_run": True, "symmetry_x": sym_x, "cmd": cmd}, indent=2))
+        return 0
+    import subprocess
+
+    subprocess.run(cmd, check=True)
+    print(json.dumps({"output": str(args.output), "symmetry_x": sym_x, "target_quads": target_quads}, indent=2))
+    return 0
+
+
+def _cmd_s3_export_glb(args: argparse.Namespace) -> int:
+    import subprocess
+
+    script_path = Path(__file__).resolve().parent / "s3_lookdev" / "studio_export.py"
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    meta_json = out_dir / "studio_export_report.json"
+    cmd = [
+        str(args.blender_bin),
+        "--background",
+        "--factory-startup",
+        "--python-exit-code",
+        "1",
+        "--python",
+        str(script_path),
+        "--",
+        "--mesh",
+        str(args.mesh),
+        "--albedo",
+        str(args.albedo),
+        "--normal-4k",
+        str(args.normal_4k),
+        "--orm",
+        str(args.orm),
+        "--out-dir",
+        str(out_dir),
+        "--glb-name",
+        str(args.glb_name),
+        "--samples",
+        str(int(args.samples)),
+        "--meta-json",
+        str(meta_json),
+    ]
+    if args.use_gpu:
+        cmd.append("--use-gpu")
+    subprocess.run(cmd, check=True)
+    print(meta_json.read_text(encoding="utf-8"))
+    return 0
+
+
 def _cmd_s3_lookdev(args: argparse.Namespace) -> int:
     from PIL import Image
     import numpy as np
 
-    from quadvox.s0_views.camera import calibrate_s0_ortho_camera, matte_s0_view
+    from quadvox.s0_views.camera import (
+        calibrate_s0_ortho_camera,
+        compute_silhouette_alignment_warp,
+        matte_s0_view,
+    )
     from quadvox.s3_lookdev.backproject import (
         bake_two_band_albedo,
         load_uv_mesh_and_labels,
         rasterize_uv_attributes,
     )
-    from quadvox.s3_lookdev.delight import constrained_exposure_match
+    from quadvox.s3_lookdev.delight import apply_region_protected_delight, constrained_exposure_match
     from quadvox.s3_lookdev.materials import derive_generic_pbr_maps, derive_prop_pbr_maps
 
     prof = load_profile_config(args.profile)
@@ -234,6 +320,18 @@ def _cmd_s3_lookdev(args: argparse.Namespace) -> int:
     if not views:
         raise ValueError("At least --front view is required for S3 lookdev")
 
+    if args.delighted_dir:
+        d_dir = Path(args.delighted_dir)
+        for v in views:
+            cand = d_dir / f"{v.name}.png"
+            if cand.is_file():
+                d_view = matte_s0_view(cand, name=f"{v.name}_delighted")
+                v.rgb_dilated = apply_region_protected_delight(
+                    v.rgb_dilated,
+                    d_view.rgb_dilated,
+                    v.fg_mask,
+                )
+
     matched_rgbs, _ = constrained_exposure_match(
         [v.rgb_dilated for v in views],
         [v.fg_mask for v in views],
@@ -241,17 +339,19 @@ def _cmd_s3_lookdev(args: argparse.Namespace) -> int:
     for v, m_rgb in zip(views, matched_rgbs):
         v.rgb_dilated = m_rgb
 
-    cameras = [
-        calibrate_s0_ortho_camera(
+    cameras = []
+    for v, az in zip(views, azims):
+        cam, mesh_mask = calibrate_s0_ortho_camera(
             mesh_data["verts"],
             mesh_data["faces"],
             v.fg_mask,
             name=v.name,
             azim_deg=az,
             is_primary=True,
-        )[0]
-        for v, az in zip(views, azims)
-    ]
+        )
+        if args.silhouette_warp:
+            v.warp_dx = compute_silhouette_alignment_warp(mesh_mask, v.fg_mask)
+        cameras.append(cam)
 
     roi_boxes: list[ROISovereigntyBox] = prof.roi_boxes() if s3.get("roi_sovereignty", False) else []
     baked = bake_two_band_albedo(
@@ -379,6 +479,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_s2u.add_argument("--labels-npz", default=None)
     p_s2u.add_argument("--asset-type", default=None)
     p_s2u.add_argument("--uv-method", default=None)
+    p_s2u.add_argument("--crease-angle-deg", type=float, default=None)
     p_s2u.add_argument("--tex-size", type=int, default=None)
     p_s2u.add_argument("--use-gpu", action="store_true")
     p_s2u.add_argument("--blender-bin", default=str(resolve_blender_bin()))
@@ -388,6 +489,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_s2l.add_argument("--output", required=True)
     p_s2l.add_argument("--ref-mesh", default=None)
 
+    p_s2q = sub.add_parser("s2-qem", help="Run topology-preserving QEM mesh decimation.")
+    p_s2q.add_argument("--profile", default="object")
+    p_s2q.add_argument("--input", required=True)
+    p_s2q.add_argument("--output", required=True)
+    p_s2q.add_argument("--target-faces", type=int, default=None)
+    p_s2q.add_argument("--backend", choices=("pymeshlab", "pyfqmr", "open3d"), default="pymeshlab")
+
+    p_s2qr = sub.add_parser("s2-quad-retopo", help="Run ReQuad quad retopology with optional Layer-2 X=0 symmetry.")
+    p_s2qr.add_argument("--profile", default="object")
+    p_s2qr.add_argument("--input", required=True)
+    p_s2qr.add_argument("--output", required=True)
+    p_s2qr.add_argument("--target-faces", type=int, default=None)
+    p_s2qr.add_argument("--symmetry-x", action=argparse.BooleanOptionalAction, default=None)
+    p_s2qr.add_argument("--labels-npz", default=None)
+    p_s2qr.add_argument("--blender-bin", default=str(resolve_blender_bin()))
+    p_s2qr.add_argument("--dry-run", action="store_true")
+
     p_s3 = sub.add_parser("s3-lookdev", help="Run Two-Band backprojection, 3D harmonic fill & PBR map derivation.")
     p_s3.add_argument("--profile", default="object")
     p_s3.add_argument("--mesh", required=True)
@@ -395,12 +513,25 @@ def build_parser() -> argparse.ArgumentParser:
     p_s3.add_argument("--left", default=None)
     p_s3.add_argument("--back", default=None)
     p_s3.add_argument("--right", default=None)
+    p_s3.add_argument("--delighted-dir", default=None, help="Optional directory of external delighted views (front.png, etc.).")
+    p_s3.add_argument("--silhouette-warp", action="store_true", help="Enable 1D scanline silhouette alignment warp.")
     p_s3.add_argument("--normal-4k", default=None)
     p_s3.add_argument("--ao-4k", default=None)
     p_s3.add_argument("--curvature-4k", default=None)
     p_s3.add_argument("--labels-npz", default=None)
     p_s3.add_argument("--tex-size", type=int, default=None)
     p_s3.add_argument("--out-dir", required=True)
+
+    p_s3e = sub.add_parser("s3-export-glb", help="Export final PBR glTF 2.0 (.glb) and 6-view studio sheet via Blender 5.3.")
+    p_s3e.add_argument("--mesh", required=True)
+    p_s3e.add_argument("--albedo", required=True)
+    p_s3e.add_argument("--normal-4k", required=True)
+    p_s3e.add_argument("--orm", required=True)
+    p_s3e.add_argument("--out-dir", required=True)
+    p_s3e.add_argument("--glb-name", default="asset_pbr.glb")
+    p_s3e.add_argument("--samples", type=int, default=32)
+    p_s3e.add_argument("--use-gpu", action="store_true")
+    p_s3e.add_argument("--blender-bin", default=str(resolve_blender_bin()))
 
     return parser
 
@@ -417,7 +548,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "s1-render": _cmd_s1_render,
         "s2-unwrap-bake": _cmd_s2_unwrap_bake,
         "s2-lato2-repair": _cmd_s2_lato2_repair,
+        "s2-qem": _cmd_s2_qem,
+        "s2-quad-retopo": _cmd_s2_quad_retopo,
         "s3-lookdev": _cmd_s3_lookdev,
+        "s3-export-glb": _cmd_s3_export_glb,
     }
     return dispatch[args.command](args)
 

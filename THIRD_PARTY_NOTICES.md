@@ -16,12 +16,12 @@ Recommended as the default open-source pipeline backbone:
 | Component / 组件名称 | Upstream Repository / 上游地址 | License / 许可证 | Role in Pipeline / 在管线中的职责 |
 |---|---|---|---|
 | **Direct3D-V3** | https://github.com/DreamTechAI/Direct3D-V3 | MIT | Stage 1 `1536³` sparse-voxel refiner (4-view lossless `8³` rotation fusion) / S1 四视角 1536³ 稀疏体素精修主引擎 |
-| **Pixal3D** | https://github.com/TencentARC/Pixal3D | Apache-2.0 | Stage 1 multi-view coarse & hard-surface mesh generator / S1 多视图粗模与硬表面道具生成 |
+| **Pixal3D** | https://github.com/TencentARC/Pixal3D | MIT | Stage 1 multi-view coarse & hard-surface mesh generator / S1 多视图粗模与硬表面道具生成 |
 | **LATO.2** | https://github.com/LoHhhha/LATO.2 | MIT | Stage 2 hard-surface low-poly retopology / S2 硬表面低模重拓扑 |
-| **StableDelight** (`yoso-delight-v0-4-base`) | https://huggingface.co/Stable-X/yoso-delight-v0-4-base | Apache-2.0 | Stage 3 specular & shadow delighting / S3 高光与投影剥离（去光） |
-| **Marigold-V2** | https://github.com/huawei-bayerlab/marigold-v2 | Apache-2.0 | Stage 3 optional intrinsic albedo verification / S3 可选本征反照率校验 |
-| **QIE-2511-Studio-DeLight** | https://huggingface.co/prithivMLmods/QIE-2511-Studio-DeLight | Apache-2.0 | Stage 3 optional studio delighting baseline / S3 可选影棚级去光对照基线 |
-| **MV-Adapter** | https://github.com/huanngzh/MV-Adapter | Apache-2.0 | Stage 3 optional blind-spot view synthesis / S3 可选盲区辅助视角合成 |
+| **StableDelight** (`yoso-delight-v0-4-base`) | https://huggingface.co/Stable-X/yoso-delight-v0-4-base | Apache-2.0 | Stage 3 optional external delight preprocessor (`--delighted-dir`) / S3 可选外部去光预处理器（输出交由 `delight.py` 掩码融合） |
+| **Marigold-V2** | https://github.com/huawei-bayerlab/marigold-v2 | Apache-2.0 | Stage 3 optional external intrinsic albedo preprocessor / S3 可选外部本征反照率预处理器 |
+| **QIE-2511-Studio-DeLight** | https://huggingface.co/prithivMLmods/QIE-2511-Studio-DeLight | Apache-2.0 | Stage 3 optional external studio delighting baseline / S3 可选外部影棚去光预处理器 |
+| **MV-Adapter** | https://github.com/huanngzh/MV-Adapter | Apache-2.0 | Stage 3 optional external blind-spot view synthesizer / S3 可选外部盲区辅助视角合成器 |
 
 ---
 
@@ -44,8 +44,8 @@ The following optional upstream components carry **non-commercial** or **regiona
 
 | Component / 组件名称 | Upstream URL / 上游地址 | License & Restriction / 许可限制 | Permissive Alternative in Engine / 管线内置的宽松商用替代方案 |
 |---|---|---|---|
-| **Hunyuan3D-2.1 / 2mv** | https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1 | Tencent Hunyuan Community License (non-commercial / regional restrictions) | Use **Pixal3D MV** (Apache-2.0) as the coarse shape generator |
-| **PartField** | https://github.com/nv-tlabs/PartField | NVIDIA Source Code License (§3.3 Non-Commercial Research) | Disable `PartField` and use crease-guided Blender SLIM UV unwrapping |
-| **DINOv3** | https://github.com/facebookresearch/dinov3 | Meta DINOv3 License | Upstream feature extractor used by `Direct3D-V3`; review Meta terms before commercial deployment |
-| **Marigold-IID** (`marigold-iid-appearance-v1-1`) | https://huggingface.co/prs-eth/marigold-iid-appearance-v1-1 | CreativeML OpenRAIL++-M | Omit IID maps and use calibrated curvature/AO roughness & metallic derivation (`materials.py`) |
+| **Hunyuan3D-2.1 / 2mv** | https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1 | Tencent Hunyuan Community License (non-commercial / regional restrictions) | Use **Pixal3D MV** (MIT) as the coarse shape generator |
+| **PartField** | https://github.com/nv-tlabs/PartField | NVIDIA Source Code License (§3.3 Non-Commercial Research) | Optional external `.npz` label provider (`--labels-npz`); built-in crease-guided Blender SLIM UV works without it |
+| **DINOv3** | https://github.com/facebookresearch/dinov3 | Meta DINOv3 License | Upstream feature extractor used by `Direct3D-V3` (loaded via `timm/vit_huge_plus_patch16_dinov3.lvd1689m`); review Meta terms before commercial deployment |
+| **Marigold-IID** (`marigold-iid-appearance-v1-1`) | https://huggingface.co/prs-eth/marigold-iid-appearance-v1-1 | CreativeML OpenRAIL++-M | Optional external roughness/metallic map provider; built-in curvature/AO PBR derivation (`materials.py`) runs without it |
 | **Qwen-Image-2.1** | https://huggingface.co/Qwen/Qwen-Image-2.1 | Qwen Research License (Non-Commercial) | Optional Stage 0 relight/matte helper; disabled by default |

@@ -7,8 +7,8 @@ Normalizes meshes to canonical glTF right-handed `y_up_z_front`:
 - Uniform scale so total height equals `target_height` (default `1.0`)
 
 Supports configurable axis mapping (`up_axis`, `front_axis`) and `yaw_deg`
-pre-rotation (e.g., `front_axis="+x"` or `yaw_deg=-90.0` for
-`Tripo/anime_girl_3d_model_merged.glb`, or `yaw_deg=180.0` for `-Z`-facing exports).
+pre-rotation (e.g., `front_axis="+x"` or `yaw_deg=-90.0` for `+X`-facing exports,
+or `yaw_deg=180.0` for `-Z`-facing exports).
 """
 
 from __future__ import annotations

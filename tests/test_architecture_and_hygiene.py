@@ -84,3 +84,31 @@ def test_cli_profile_show_smoke(capsys) -> None:
     out = json.loads(capsys.readouterr().out)
     assert out["name"] == "hard_surface_roi"
     assert out["s1"]["repair"]["cellocut_qef"] is True
+
+
+def test_no_stale_s1_backend_or_legacy_runner_invocations() -> None:
+    for folder in ("quadvox", "runners"):
+        for p in sorted((REPO_ROOT / folder).rglob("*.py")):
+            if "__pycache__" in p.parts:
+                continue
+            tree = ast.parse(p.read_text(encoding="utf-8"), filename=str(p))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    val = node.value
+                    assert "s1_backend." not in val, f"Stale s1_backend reference in {p}:{getattr(node, 'lineno', 0)}"
+                    assert "colab_remote_runner.py" not in val, (
+                        f"Stale colab_remote_runner.py reference in {p}:{getattr(node, 'lineno', 0)}"
+                    )
+
+
+def test_git_does_not_ignore_quadvox_tools_package() -> None:
+    import subprocess
+
+    for rel in ("quadvox/tools/__init__.py", "quadvox/tools/external_tools.py"):
+        target = REPO_ROOT / rel
+        assert target.is_file(), f"Missing core module {target}"
+        proc = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "check-ignore", "-q", rel],
+            capture_output=True,
+        )
+        assert proc.returncode != 0, f".gitignore must NOT ignore tracked package file {rel}"

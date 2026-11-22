@@ -53,8 +53,8 @@ _colab_staging/
 *.hdr
 
 # External GPL-3.0 Binaries & Local Tools (fetched via scripts/install_external_tools.sh)
-tools/
-bin/
+/tools/
+/bin/
 
 # Credentials, SSH Keys & Local Session State
 .ssh/

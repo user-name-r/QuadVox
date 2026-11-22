@@ -650,7 +650,7 @@ def _run_production_mode(
     gpu_info: dict[str, Any],
     hb: HeartbeatState,
 ) -> dict[str, Any]:
-    from quadvox.contracts import RunMeta
+    from quadvox.contracts import JobConfig, RunMeta
     from quadvox.s1_geometry.generators import get_generator, normalize_backend_name
     from quadvox.s1_geometry.generators.path_b_cpp import ensure_trellis_cli
     from quadvox.s1_geometry.repair.inplace_clean import inplace_clean_glb
@@ -791,29 +791,47 @@ def _run_production_mode(
         [c.peak_vram_gb for c in ranked_cands] + [repair_vram_gb]
     )
 
-    meta = RunMeta(
+    rep_contract = (
+        "inplace"
+        if repair_method in ("inplace", "inplace_clean")
+        else (
+            "cellocut"
+            if repair_method in ("cellocut", "cellocut_remesh")
+            else ("none" if repair_method == "none" else "both")
+        )
+    )
+    job_cfg = JobConfig(
+        mode=input_mode,
+        input_path=str(views_prepped),
+        out_dir=str(OUTPUTS_DIR),
         backend=backend,
-        repair_method=repair_method,
-        input_mode=input_mode,
+        repair_method=rep_contract,
         resolution=resolution,
-        seed=winner_cand.seed,
-        seeds_evaluated=ranked_cands,
-        elapsed_s=time.monotonic() - t_total0,
-        gen_elapsed_s=gen_elapsed_s,
-        repair_elapsed_s=repair_elapsed_s,
-        peak_vram_gb=peak_vram_gb,
+        seed=seeds[0],
+        seeds=len(seeds),
+        seed_list=seeds,
         target_height=target_height,
-        coordinate_frame="y_up_z_front",
+        fov_deg=fov_deg,
+    )
+    meta = RunMeta(
+        job=job_cfg,
+        selected_seed=winner_cand.seed,
+        candidates=ranked_cands,
         raw_metrics=raw_metrics,
-        clean_metrics=clean_metrics,
-        artifacts={
+        repaired_metrics=clean_metrics,
+        backend_version=backend,
+        elapsed_s=time.monotonic() - t_total0,
+        peak_vram_gb=peak_vram_gb,
+        gpu_name=str(gpu_info.get("gpu_name") or "unknown"),
+        outputs={
             "raw_glb": "raw.glb",
             "clean_white_glb": "clean_white.glb",
             "views_prepped": "views_prepped",
             "meta_json": "meta.json",
             "selection_reason": selection_reason,
+            "gen_elapsed_s": f"{gen_elapsed_s:.3f}",
+            "repair_elapsed_s": f"{repair_elapsed_s:.3f}",
         },
-        colab_gpu=gpu_info.get("gpu_name"),
     )
     meta.write_json(OUTPUTS_DIR / "meta.json")
     return meta.to_dict()

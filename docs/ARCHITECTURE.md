@@ -19,7 +19,7 @@
 
 - **Geometry-First Matte Clay Prompting (`turnaround.py`)**: constructs geometry-focused prompts (aligned with Direct3D-V3 upstream `assets/prompt.txt`) that suppress baked lighting, specular reflections, and surface texturing prior to S1 geometry inference.
 - **RGBA Normalization & Orbit Manifest (`preprocess.py`)**: extracts clean alpha mattes, centers and scales `0° / 90° / 180° / 270°` views with uniform padding (`pad_factor=1.1`), and writes canonical camera transforms (`transforms.json`).
-- **Differentiable Orthographic Camera Calibration (`camera.py`)**: calibrates per-view scale and 2D translation (`calibrate_s0_ortho_camera`) against the target 3D mesh silhouette, paired with smooth silhouette alignment warps (`compute_silhouette_alignment_warp`).
+- **Discrete Coordinate-Ascent Orthographic Camera Calibration (`camera.py`)**: calibrates per-view scale and 2D translation (`calibrate_s0_ortho_camera`) via multi-resolution silhouette IoU maximization against the target 3D mesh, paired with 1D scanline silhouette alignment warps (`compute_silhouette_alignment_warp`, enabled via `--silhouette-warp`).
 - **4-View Input Alignment Boundaries (Strict Requirements vs. Automatic Correction)**:
   - **Automatically Corrected by Code**: Global canvas scale and 2D centering offsets do not require manual pixel-tweaking (`preprocess.py` and `camera.py` solve them automatically).
   - **Three Strict Input Constraints**:
@@ -62,6 +62,6 @@ When `s1.coarse_splice.enabled: true`, two complementary coarse meshes (for exam
   - `quad_retopo.py`: subprocess wrappers for `ReQuad`, `QuadWild`, and `QuadriFlow` with configurable Layer-2 `symmetry_x` (`False` by default).
   - `slim_uv_bake.py`: crease-guided Blender 5.3 `MINIMUM_STRETCH` (SLIM) low-island UV unwrapping and 4K Cycles baking (`normal_4k.png`, `ao_4k.png`, `curvature_4k.png`) using a welded displaced cage (`WeldedSmoothBakeCage`).
 - **Stage 3 — Delighting, Two-Band Backprojection & 3D Manifold Harmonic Inpainting**:
-  - `delight.py`: region-protected delighting with masked exposure and chroma preservation.
+  - `delight.py`: constrained multi-view exposure/white-balance matching (`constrained_exposure_match`) and region-protected masked blending (`apply_region_protected_delight`) when external delighted views (`--delighted-dir`) are supplied.
   - `backproject.py`: frequency-separated Two-Band multi-view blending (`low_power=4.0`, `detail_power=32.0`), optional Layer-2 `ROISovereigntyBox` priority locking, seam-welded 3D Dirichlet harmonic hole filling across occluded surface regions, and Euclidean distance transform (EDT) UV gutter padding.
-  - `materials.py` & `studio_export.py`: curvature/AO metallic PBR or generic PBR ORM map derivation and Blender 5.3 Cycles glTF 2.0 `.glb` export.
+  - `materials.py` & `studio_export.py`: built-in curvature/AO metallic PBR or generic PBR ORM map derivation (with optional external `Marigold-IID` map fusion) and Blender 5.3 Cycles glTF 2.0 `.glb` export.

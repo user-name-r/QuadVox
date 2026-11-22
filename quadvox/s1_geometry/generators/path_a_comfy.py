@@ -564,7 +564,7 @@ def run_birefnet_matte(
     cmd = [
         sys.executable,
         "-m",
-        "s1_backend.generators.path_a_comfy",
+        "quadvox.s1_geometry.generators.path_a_comfy",
         "birefnet",
         "--manifest",
         str(manifest_path),
@@ -724,7 +724,7 @@ def run_comfy_remesh_solid(
     cmd = [
         sys.executable,
         "-m",
-        "s1_backend.generators.path_a_comfy",
+        "quadvox.s1_geometry.generators.path_a_comfy",
         "remesh",
         "--in-glb",
         str(Path(in_glb)),
@@ -829,7 +829,7 @@ class PathAComfyGenerator(BaseShapeGenerator):
         cmd = [
             sys.executable,
             "-m",
-            "s1_backend.generators.path_a_comfy",
+            "quadvox.s1_geometry.generators.path_a_comfy",
             "generate",
             "--views-dir",
             str(src),

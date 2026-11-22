@@ -425,16 +425,16 @@ def _run_in_blender(
         cam_data.clip_start = 0.01
         cam_data.clip_end = 50.0
 
-    # Camera presets in Blender Z-up where normalized character faces -Y, up is +Z, char left is +X.
+    # Camera presets in Blender Z-up where normalized asset faces -Y, up is +Z, left is +X.
     cam_presets = {
         "FRONT (+Z)": dict(location=(0.0, -3.2, 0.50), target=(0.0, 0.0, 0.50), ortho=True, ortho_scale=1.14),
         "3/4 VIEW": dict(location=(1.65, -2.15, 0.72), target=(0.0, 0.0, 0.50), ortho=False, lens=85.0),
         "LEFT (+X)": dict(location=(3.2, 0.0, 0.50), target=(0.0, 0.0, 0.50), ortho=True, ortho_scale=1.14),
         "BACK (-Z)": dict(location=(0.0, 3.2, 0.50), target=(0.0, 0.0, 0.50), ortho=True, ortho_scale=1.14),
         "RIGHT (-X)": dict(location=(-3.2, 0.0, 0.50), target=(0.0, 0.0, 0.50), ortho=True, ortho_scale=1.14),
-        "HEAD CLOSE-UP": dict(location=(0.25, -1.04, 0.87), target=(0.0, 0.0, 0.86), ortho=False, lens=90.0),
-        "COLLAR / BOW": dict(location=(0.08, -0.82, 0.72), target=(0.0, 0.0, 0.70), ortho=False, lens=90.0),
-        "SKIRT BOTTOM": dict(location=(0.10, -0.44, 0.14), target=(0.0, 0.0, 0.44), ortho=False, lens=45.0),
+        "UPPER CLOSE-UP": dict(location=(0.25, -1.04, 0.87), target=(0.0, 0.0, 0.86), ortho=False, lens=90.0),
+        "MID DETAIL": dict(location=(0.08, -0.82, 0.72), target=(0.0, 0.0, 0.70), ortho=False, lens=90.0),
+        "LOWER BASE": dict(location=(0.10, -0.44, 0.14), target=(0.0, 0.0, 0.44), ortho=False, lens=45.0),
     }
 
     target_yaw = (-90.0 if align_tripo else 0.0) + float(yaw_deg)
@@ -499,7 +499,7 @@ def _run_in_blender(
                 "LEFT (+X)",
                 "BACK (-Z)",
                 "RIGHT (-X)",
-                "HEAD CLOSE-UP",
+                "UPPER CLOSE-UP",
             ]
             panels = [_render_panel(k, k, f"p{i}") for i, k in enumerate(view_order)]
             cols, rows = 3, 2
@@ -520,9 +520,9 @@ def _run_in_blender(
                 "LEFT (+X)",
                 "BACK (-Z)",
                 "RIGHT (-X)",
-                "HEAD CLOSE-UP",
-                "COLLAR / BOW",
-                "SKIRT BOTTOM",
+                "UPPER CLOSE-UP",
+                "MID DETAIL",
+                "LOWER BASE",
             ]
             # 2 view-pairs per row x 4 rows -> 4 panels wide x 4 rows tall (side-by-side OURS | TRIPO).
             pair_gap = 12

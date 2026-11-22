@@ -282,7 +282,6 @@ def _unwrap_prop_with_crease_sweep(
     """Run `quadvox.s2_retopo.slim_uv_bake.unwrap_part_aware(..., asset_type='prop')` cleanly without altering `slim_uv_bake.py`."""
     from quadvox.s2_retopo import slim_uv_bake as bake_4k  # type: ignore
 
-    orig_partition = bake_4k._partition_prop_planar_charts
     results: list[dict[str, Any]] = []
     uv_dir.mkdir(parents=True, exist_ok=True)
 
@@ -292,32 +291,19 @@ def _unwrap_prop_with_crease_sweep(
         out_png = uv_dir / f"prop_v3000_{tag}_uv_layout.png"
         out_json = uv_dir / f"prop_v3000_{tag}_unwrap.json"
 
-        def _wrapped_partition(verts, faces, fn, *, crease_deg=48.0, max_chart_faces=600, min_chart_faces=24, _override=float(deg)):
-            return orig_partition(
-                verts,
-                faces,
-                fn,
-                crease_deg=_override,
-                max_chart_faces=max_chart_faces,
-                min_chart_faces=min_chart_faces,
-            )
-
-        bake_4k._partition_prop_planar_charts = _wrapped_partition  # type: ignore[assignment]
-        try:
-            res = bake_4k.unwrap_part_aware(
-                clean_glb,
-                out_glb,
-                tex_size=4096,
-                padding_px=16,
-                face_scale_boost=1.0,
-                uv_preview_png=out_png,
-                unwrap_json_path=out_json,
-                uv_method="blender_slim",
-                asset_type="prop",
-                blender_bin=blender_bin,
-            )
-        finally:
-            bake_4k._partition_prop_planar_charts = orig_partition  # type: ignore[assignment]
+        res = bake_4k.unwrap_part_aware(
+            clean_glb,
+            out_glb,
+            tex_size=4096,
+            padding_px=16,
+            face_scale_boost=1.0,
+            uv_preview_png=out_png,
+            unwrap_json_path=out_json,
+            uv_method="blender_slim",
+            asset_type="prop",
+            blender_bin=blender_bin,
+            crease_angle_deg=float(deg),
+        )
 
         meta = res.to_dict()
         ov_pct = 100.0 * float(meta["uv_overlap_count"]) / float(1024 * 1024)
@@ -460,11 +446,17 @@ for idx, (lbl, glb_p, use_maps) in enumerate(panels):
         lo.rotation_euler = d.to_track_quat("-Z", "Y").to_euler()
         bpy.context.collection.objects.link(lo)
 
+    all_corners = [m.matrix_world @ Vector(c) for m in meshes for c in m.bound_box]
+    bmin = Vector((min(v.x for v in all_corners), min(v.y for v in all_corners), min(v.z for v in all_corners)))
+    bmax = Vector((max(v.x for v in all_corners), max(v.y for v in all_corners), max(v.z for v in all_corners)))
+    center = 0.5 * (bmin + bmax)
+    span = max((bmax - bmin).length, 1e-3)
+
     cam_d = bpy.data.cameras.new("Cam")
     cam_d.lens = 48.0
     cam_o = bpy.data.objects.new("Cam", cam_d)
-    cam_o.location = (0.44, -1.65, 0.34)
-    target = Vector((0.40, -0.35, 0.26))
+    cam_o.location = (center.x + 0.32 * span, center.y - 1.35 * span, center.z - 0.12 * span)
+    target = Vector((center.x + 0.15 * span, center.y - 0.10 * span, center.z - 0.15 * span))
     cam_o.rotation_euler = (target - Vector(cam_o.location)).to_track_quat("-Z", "Y").to_euler()
     bpy.context.collection.objects.link(cam_o)
     bpy.context.scene.camera = cam_o
