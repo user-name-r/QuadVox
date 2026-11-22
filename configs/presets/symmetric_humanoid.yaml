@@ -1,0 +1,56 @@
+# Layer-2 Configurable Preset: Symmetric Humanoid Asset (对称人形资产预设)
+# Enables all three Layer-2 optional capabilities via YAML without hardcoding
+# any character-specific coordinates inside the Python engine:
+#   1. front_roi_box: Front ROI view-priority lock in S1 D3D-V3 & S3 Two-Band backprojection
+#   2. coarse_splice: OpenVDB level-set dual-coarse spatial splicing
+#   3. symmetry_x: true (ReQuad / QuadriFlow X=0 bilateral mirror symmetry)
+
+profile_name: symmetric_humanoid
+asset_type: character
+
+s1:
+  backend: d3dv3_4view
+  d3dv3_fusion:
+    enabled: true
+    # Optional front ROI box in normalized [0, 1] height-anchored space.
+    # Override these coordinates to match your own character/humanoid proportions.
+    front_roi_box:
+      name: front_head_roi
+      x_range: [-0.08, 0.08]
+      y_range: [0.80, 0.95]
+      z_range: [0.005, 0.50]
+      margin: 0.025
+      target_view: front
+      min_target_weight: 0.15
+      min_surface_weight: 0.90
+      suppress_ortho_views: 0.985
+      normal_gate_range: [0.10, 0.40]
+      anchor_z_box:
+        x_range: [-0.08, 0.08]
+        y_range: [0.83, 0.92]
+    smoothing_zones: []
+  coarse_splice:
+    enabled: true
+    voxel_res: 384
+    half_width: 14.0
+    split_axis: "y"
+    transition_range: [0.69, 0.75]
+    # Optional lateral guard (e.g. keep outstretched T-pose arms from primary coarse mesh)
+    lateral_guard_x: [0.155, 0.205]
+    lateral_guard_y_max: [0.785, 0.805]
+  repair:
+    default_method: cellocut
+    cellocut_resolution: 1024
+    cellocut_qef: false
+
+s2:
+  retopo_method: requad
+  target_faces: 35000
+  symmetry_x: true
+  uv_method: blender_slim
+  crease_angle_deg: 42.0
+
+s3:
+  roi_sovereignty: true
+  pbr_recipe: generic_pbr
+  export_formats: ["glb"]

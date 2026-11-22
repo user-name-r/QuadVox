@@ -1,0 +1,41 @@
+# Layer-2 Configurable Preset: Hard-Surface Asset with Front ROI View-Priority Lock
+# (带正面 ROI 视角优先级锁定的硬表面资产预设)
+# Suitable for mech cockpits, armored chest crests, or branded product front panels
+# where frontal geometric sharpness and clean front texture projection are critical.
+
+profile_name: hard_surface_roi
+asset_type: prop
+
+s1:
+  backend: d3dv3_4view
+  d3dv3_fusion:
+    enabled: true
+    front_roi_box:
+      name: front_hero_panel
+      x_range: [-0.18, 0.18]
+      y_range: [0.45, 0.78]
+      z_range: [0.02, 0.50]
+      margin: 0.03
+      target_view: front
+      min_target_weight: 0.20
+      min_surface_weight: 0.90
+      suppress_ortho_views: 0.96
+      normal_gate_range: [0.10, 0.40]
+  repair:
+    default_method: cellocut
+    cellocut_resolution: 1536
+    cellocut_band: 0.85
+    cellocut_project_back: 0.70
+    cellocut_qef: true
+
+s2:
+  retopo_method: lato2
+  target_faces: 12000
+  symmetry_x: true
+  uv_method: blender_slim
+  crease_angle_deg: 39.0
+
+s3:
+  roi_sovereignty: true
+  pbr_recipe: hard_surface_metal
+  export_formats: ["glb"]

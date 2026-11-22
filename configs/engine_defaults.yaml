@@ -1,0 +1,156 @@
+# QuadVox — Universal Multi-View 3D Production Pipeline Configuration
+# Architecture Summary:
+#   Layer 1 (100% Universal Core):
+#       - S1: 4-View Direct3D-V3 1536^3 lossless 8^3 sparse-voxel rotation fusion,
+#             Pixal3D MV + CelloCut (QEF feature-preserving profiles)
+#       - S2: Crease-guided Blender 5.3 SLIM low-island UV + 4K Cycles welded-cage bake + LATO.2 repair
+#       - S3: Region-protected delighting + Two-Band frequency-separated backprojection
+#             + seam-welded 3D manifold harmonic hole filling + Marigold-IID / curvature-AO PBR
+#   Layer 2 (Configurable Humanoid / Symmetric Switches):
+#       - front_roi_box / roi_boxes: Front ROI view-priority lock (S1 & S3)
+#       - coarse_splice: OpenVDB level-set dual-coarse spatial splicing (S1)
+#       - symmetry_x: Optional X=0 mirror-symmetric quad retopology (S2 ReQuad / QuadriFlow)
+#       All Layer-2 switches default to OFF (false / null) so asymmetric objects are never distorted.
+
+default_profile: object
+
+cloud:
+  gpu_order: ["G4", "A100", "H100"]
+  allow_l4_fallback: false
+  assign_request_timeout_s: 80
+  assign_outer_timeout_s: 95
+
+coordinate_frame:
+  mesh: y_up_z_front
+  orbit_transforms: z_up_nerf
+
+s0:
+  view_size: 1024
+  azimuths_deg: [0.0, 90.0, 180.0, 270.0]
+  elevation_deg: 0.0
+  fov_deg: 20.0
+  pad_factor: 1.1
+  porcelain_prompt_style: "smooth_resin_d3dv3"
+
+s1:
+  backend: d3dv3_4view  # "d3dv3_4view" | "path_a" (Pixal3D ComfyUI) | "path_b" (pixal3d.cpp)
+  resolution: 1536
+  seed: 42
+  seeds: 1
+  target_height: 1.0
+  d3dv3_fusion:
+    enabled: true
+    stage_resolutions: [512, 1024, 1536]
+    sharpen_t_start: 0.55
+    cfg_decay_t_start: 0.72
+    cfg_late_min: 3.5
+    guidance_scale: 7.0
+    # Layer-2 optional switches (OFF by default):
+    front_roi_box: null
+    roi_boxes: []
+    smoothing_zones: []
+  coarse_splice:
+    # Layer-2 optional OpenVDB dual-coarse mesh splice (OFF by default)
+    enabled: false
+    voxel_res: 384
+    half_width: 14.0
+    split_axis: "y"
+    transition_range: [0.69, 0.75]
+    lateral_guard_x: null
+    lateral_guard_y_max: null
+  repair:
+    default_method: cellocut
+    cellocut_resolution: 1024
+    cellocut_fill: 20.0
+    cellocut_band: 1.0
+    cellocut_project_back: 0.5
+    cellocut_qef: false
+    cellocut_smooth_iters: 0
+    min_component_area_rel: 0.005
+    weld_eps_rel: 1.0e-10
+    pinhole_max_perimeter_ratio: 0.03
+    pinhole_max_vertices: 16
+
+s2:
+  retopo_method: qem  # "qem" | "lato2" | "requad" | "quadriflow"
+  target_faces: 35000
+  uv_method: blender_slim
+  pack_method: blender_concave
+  crease_angle_deg: 39.0
+  tex_size: 4096
+  padding_px: 16
+  min_island_px: 16
+  min_true_gap_px: 6.0
+  # Layer-2 optional X=0 symmetry switch (OFF by default; never force on asymmetric props)
+  symmetry_x: false
+
+s3:
+  delight_mode: stable_delight
+  detail_power: 32.0
+  low_power: 4.0
+  blur_sigma_px: 6.0
+  occl_tol_rel: 0.015
+  # Layer-2 optional ROI sovereignty lock during Two-Band backprojection (OFF by default)
+  roi_sovereignty: false
+  e2_aux_threshold: 0.50
+  run_mesh_fill: true
+  run_gutter_pad: true
+  pbr_recipe: generic_pbr
+  export_formats: ["glb"]
+
+profiles:
+  object:
+    asset_type: prop
+    s1:
+      backend: d3dv3_4view
+      repair:
+        cellocut_resolution: 1024
+        cellocut_qef: false
+    s2:
+      retopo_method: qem
+      target_faces: 25000
+      crease_angle_deg: 42.0
+      symmetry_x: false
+    s3:
+      roi_sovereignty: false
+      pbr_recipe: generic_pbr
+
+  hard_surface_prop:
+    asset_type: prop
+    s1:
+      backend: path_a
+      repair:
+        default_method: cellocut
+        cellocut_resolution: 1536
+        cellocut_fill: 20.0
+        cellocut_band: 0.85
+        cellocut_project_back: 0.70
+        cellocut_qef: true
+        cellocut_smooth_iters: 0
+    s2:
+      retopo_method: lato2
+      target_faces: 6000
+      crease_angle_deg: 39.0
+      symmetry_x: false
+    s3:
+      roi_sovereignty: false
+      pbr_recipe: hard_surface_metal
+
+  organic:
+    asset_type: prop
+    s1:
+      backend: d3dv3_4view
+      repair:
+        default_method: cellocut
+        cellocut_resolution: 1024
+        cellocut_band: 1.0
+        cellocut_project_back: 0.50
+        cellocut_qef: false
+    s2:
+      retopo_method: qem
+      target_faces: 35000
+      crease_angle_deg: 55.0
+      symmetry_x: false
+    s3:
+      roi_sovereignty: false
+      pbr_recipe: generic_pbr

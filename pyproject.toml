@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quadvox"
+version = "0.2.0"
+description = "Universal 4-view Direct3D-V3 & Pixal3D multi-view 3D generation, SLIM UV 4K baking, and Two-Band PBR pipeline with configurable Layer-2 symmetry/ROI switches."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "pillow>=10.0",
+    "pyyaml>=6.0",
+    "trimesh>=4.0",
+    "requests>=2.31",
+    "networkx>=3.0",
+]
+
+[project.optional-dependencies]
+s2 = [
+    "pyfqmr>=0.2.0",
+    "pymeshlab>=2023.12",
+    "open3d>=0.18.0",
+    "xatlas>=0.0.9",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+quadvox = "quadvox.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["quadvox*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

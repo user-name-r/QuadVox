@@ -1,0 +1,65 @@
+# Python & Environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Pipeline Runs, Caches & Heavy Outputs
+runs/
+outputs/
+_cache/
+_scratch/
+scratch/
+_colab_staging/
+*.tar.gz
+*.zip
+*.part*
+
+# 3D Assets, Checkpoints & Large Media (never commit weights or test models)
+*.glb
+*.gltf
+*.fbx
+*.obj
+*.mtl
+*.ply
+*.stl
+*.blend
+*.blend1
+*.vrm
+*.ckpt
+*.safetensors
+*.pth
+*.pt
+*.bin
+*.gguf
+*.onnx
+*.npz
+*.npy
+
+# Images / Renders (keep docs/assets/ if explicitly added later)
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.exr
+*.hdr
+
+# External GPL-3.0 Binaries & Local Tools (fetched via scripts/install_external_tools.sh)
+tools/
+bin/
+
+# Credentials, SSH Keys & Local Session State
+.ssh/
+*id_ed25519*
+colab_sessions.json
+*.token
+.env
+.env.*
