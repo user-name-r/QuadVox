@@ -20,6 +20,12 @@
 - **Geometry-First Matte Clay Prompting (`turnaround.py`)**: constructs geometry-focused prompts (aligned with Direct3D-V3 upstream `assets/prompt.txt`) that suppress baked lighting, specular reflections, and surface texturing prior to S1 geometry inference.
 - **RGBA Normalization & Orbit Manifest (`preprocess.py`)**: extracts clean alpha mattes, centers and scales `0° / 90° / 180° / 270°` views with uniform padding (`pad_factor=1.1`), and writes canonical camera transforms (`transforms.json`).
 - **Differentiable Orthographic Camera Calibration (`camera.py`)**: calibrates per-view scale and 2D translation (`calibrate_s0_ortho_camera`) against the target 3D mesh silhouette, paired with smooth silhouette alignment warps (`compute_silhouette_alignment_warp`).
+- **4-View Input Alignment Boundaries (Strict Requirements vs. Automatic Correction)**:
+  - **Automatically Corrected by Code**: Global canvas scale and 2D centering offsets do not require manual pixel-tweaking (`preprocess.py` and `camera.py` solve them automatically).
+  - **Three Strict Input Constraints**:
+    1. **Horizontal Structural Height Lines & Zero Pitch Tilt (`0° / 90° / 180° / 270°`)**: Relative vertical proportions of landmarks must match across views without elevation tilt differences (even a few pixels of vertical offset on an `X` hairpin between front and side views causes `Direct3D-V3` to carve a duplicate `XX` ghost feature; misaligned front/back ribbons produce thin "propeller-blade" slice artifacts).
+    2. **Rigid Pose & Limb Angle Consistency**: T-Pose/A-Pose arm elevation, stance width, and cuff orientation must match across views (side-view arms must foreshorten straight into the camera) to prevent underarm webbing bridges in `Pixal3D MV`.
+    3. **Zero Cross-View Semantic Contradictions**: Front, side, and back views must not hallucinate conflicting parts (e.g., an unseen back ponytail or inverted asymmetric motif), which otherwise produce porous "sponge-bridge" voxel noise along `Direct3D-V3` view transition boundaries.
 
 ---
 

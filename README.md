@@ -121,6 +121,25 @@ quadvox s3-lookdev \
 
 ---
 
+## 4-View Input Alignment Guidelines & Pitfalls
+
+> **Core Rule**: The pipeline requires high-precision alignment of **geometric pose, orthographic camera elevation, and horizontal structural height lines**, while you do **NOT** need to manually pixel-tweak global scale or canvas centering (`quadvox/s0_views/` automatically computes and corrects bounding-box scale, 2D centering, and sub-pixel silhouette alignment).
+
+### 1. Three Requirements That Must Be Strictly Aligned (Preventing P0 Geometric Artifacts)
+
+1. **Key Structural / Anatomical Horizontal Height Lines & True Orthographic Angles (`0° / 90° / 180° / 270°`)**
+   - The relative vertical height proportions of key horizontal landmarks (crown/top, eye line, chin, collar, chest line, hem, sole/base) must match across all four views, with zero camera pitch/elevation discrepancy (e.g., never mix an eye-level front view with a slightly high-angle side view).
+   - **Empirical Failure Modes**: Even a few pixels of vertical offset on a small protrusion or ornament (such as an `X`-shaped hairpin or badge) between front and side views causes `Direct3D-V3` to carve the feature twice at shifted heights (`XX` double-ghosting); misaligned front/back ribbons or thin attachments produce thin "propeller-blade" slice artifacts along view fusion planes.
+2. **Rigid Pose & Appendage Angle Consistency**
+   - T-Pose / A-Pose arm elevation, stance width, and cuff/extremity orientation must be identical across all 4 views (for instance, in the side view, a horizontal T-Pose arm must foreshorten directly toward the camera rather than dropping or swinging forward/backward). Otherwise, `Pixal3D MV` forms underarm webbing bridges to the torso and loses side-profile silhouette fidelity.
+3. **Zero Cross-View Semantic Contradictions**
+   - Front, side, and back views must not hallucinate conflicting parts (such as a back view inventing a ponytail or pack absent from the side view, or asymmetric motifs flipped inconsistently). Conflicting geometry across views causes `Direct3D-V3` to generate porous "sponge-bridge" voxel noise along multi-view transition zones.
+
+### 2. What Does NOT Require Manual Pixel Alignment (Handled Automatically by Code)
+- **Global Scale & Canvas Centering**: `quadvox s0-preprocess` automatically extracts clean foreground bounding boxes and normalizes scale/centering (`pad_factor=1.1`), while `calibrate_s0_ortho_camera` and `compute_silhouette_alignment_warp` automatically solve per-view orthographic scale, 2D translation, and silhouette boundary alignment.
+
+---
+
 ## Licensing & Third-Party Boundaries
 
 - All original code in this repository is licensed under the **MIT License** ([LICENSE](LICENSE)).
