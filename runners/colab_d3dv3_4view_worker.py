@@ -440,12 +440,21 @@ def run_worker(spec: dict[str, Any]) -> dict[str, Any]:
     }
     print(f"[crevice-keep] Surface comparison: {json.dumps(crevice_cmp['surface_preflight'])}", flush=True)
 
+    raw_g = fusion_raw.get("guidance_scale")
     cfg = D3DV3FusionConfig(
         stage_resolutions=tuple(int(x) for x in fusion_raw.get("stage_resolutions", (512, 1024, 1536))),
-        guidance_scale=float(fusion_raw.get("guidance_scale", 7.0)),
-        sharpen_t_start=float(fusion_raw.get("sharpen_t_start", 0.55)),
-        cfg_decay_t_start=float(fusion_raw.get("cfg_decay_t_start", 0.72)),
-        cfg_late_min=float(fusion_raw.get("cfg_late_min", 3.5)),
+        stage512_seeds=tuple(int(s) for s in fusion_raw.get("stage512_seeds", (2026, 2027, 2028))),
+        refine_seed=int(fusion_raw.get("refine_seed", 2026)),
+        guidance_scale=float(raw_g) if raw_g is not None else None,
+        sharpen_t_start=float(fusion_raw.get("sharpen_t_start", 0.53)),
+        cfg_decay_t_start=float(fusion_raw.get("cfg_decay_t_start", 0.50)),
+        cfg_late_min=float(fusion_raw.get("cfg_late_min", 2.2)),
+        max_tokens=int(fusion_raw.get("max_tokens", 200_000)),
+        target_faces=(
+            int(fusion_raw["target_faces"])
+            if fusion_raw.get("target_faces", 2_000_000) is not None
+            else None
+        ),
         roi_boxes=roi_boxes,
         smoothing_zones=smooth_zones,
         crevice_keep_mode="fixed",
@@ -494,11 +503,11 @@ def run_worker(spec: dict[str, Any]) -> dict[str, Any]:
     if bool(repair_cfg.get("post_fusion_inplace_clean", False)) and out_glb.is_file():
         from quadvox.s1_geometry.repair import inplace_clean_glb, normalize_glb
 
-        cleaned_tmp = OUTPUTS_DIR / "._fused_1536_cleaned.glb"
+        norm_tmp = OUTPUTS_DIR / "._fused_1536_norm.glb"
         clean_glb = OUTPUTS_DIR / "fused_1536_clean.glb"
-        inplace_clean_glb(out_glb, cleaned_tmp)
-        normalize_glb(cleaned_tmp, clean_glb, target_height=target_height)
-        cleaned_tmp.unlink(missing_ok=True)
+        normalize_glb(out_glb, norm_tmp, target_height=target_height)
+        inplace_clean_glb(norm_tmp, clean_glb)
+        norm_tmp.unlink(missing_ok=True)
         res["cleaned_glb"] = str(clean_glb)
 
     (OUTPUTS_DIR / "d3dv3_report.json").write_text(json.dumps(res, indent=2) + "\n", encoding="utf-8")

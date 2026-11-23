@@ -125,18 +125,57 @@ def test_step_beta_cfg_schedule_and_sharpening() -> None:
     assert 0.45 <= float(down[3]) <= 0.55
     assert abs(float(down[4]) - 1.0) < 1e-6 and float(down[5]) == 1.0
 
-    b0, c0 = compute_step_beta_and_cfg(0.2, stage=1536, guidance_scale=7.0, cfg_interval=(0.0, 1.0))
-    b_mid, c_mid = compute_step_beta_and_cfg(0.86, stage=1536, guidance_scale=7.0, cfg_interval=(0.0, 1.0))
-    b1, c1 = compute_step_beta_and_cfg(0.999, stage=1536, guidance_scale=7.0, cfg_interval=(0.0, 1.0))
-    assert b0 == 1.0 and c0 == 7.0
-    assert b_mid > 3.0 and abs(c_mid - 5.25) < 0.05  # Cosine midpoint at frac_c = 0.5
-    assert b1 > 5.0 and abs(c1 - 3.5) < 0.05
+    b0, c0 = compute_step_beta_and_cfg(0.2, stage=1536, guidance_scale=4.0, cfg_interval=(0.1, 0.9))
+    b_mid, c_mid = compute_step_beta_and_cfg(0.70, stage=1536, guidance_scale=4.0, cfg_interval=(0.1, 0.9))
+    b1, c1 = compute_step_beta_and_cfg(0.899, stage=1536, guidance_scale=4.0, cfg_interval=(0.1, 0.9))
+    assert b0 == 1.0 and c0 == 4.0
+    assert b_mid > 2.0 and abs(c_mid - 3.1) < 0.05  # Linear midpoint at t = 0.70 -> (4.0 + 2.2) / 2 = 3.1
+    assert b1 > 3.5 and abs(c1 - 2.2) < 0.05
 
     w = np.array([[[0.7, 0.3], [0.2, 0.8]], [[0.0, 0.0], [0.5, 0.5]], [[0.3, 0.7], [0.3, 0.2]], [[0.0, 0.0], [0.0, 0.0]]], dtype=np.float32)
     w /= w.sum(axis=0, keepdims=True)
     ws = sharpen_view_weights(w, beta=4.0)
     assert np.allclose(ws.sum(axis=0), 1.0, atol=1e-6)
     assert float(ws[1, 0, 0]) == 0.0  # 0-preserving
+
+
+def test_symmetric_humanoid_roi_bounds_and_inplace_clean_f32_watertight(tmp_path) -> None:
+    from quadvox.contracts import load_profile_config
+    from quadvox.s1_geometry.d3dv3_fusion import _eval_box_mask_np
+    from quadvox.s1_geometry.repair import compute_mesh_metrics, inplace_clean_glb
+
+    prof = load_profile_config("symmetric_humanoid")
+    fusion = prof.s1["d3dv3_fusion"]
+    assert float(fusion["guidance_scale"]) == 4.0
+    assert int(fusion["max_tokens"]) == 200_000
+    assert int(fusion["target_faces"]) == 2_000_000
+
+    box = prof.roi_boxes()[0]
+    m_back_of_head = _eval_box_mask_np(
+        np.array([0.0]), np.array([0.875]), np.array([0.0]),
+        x_range=box.x_range, y_range=box.y_range, z_range=box.z_range, margin=box.margin,
+    )
+    m_face_center = _eval_box_mask_np(
+        np.array([0.0]), np.array([0.875]), np.array([0.04]),
+        x_range=box.x_range, y_range=box.y_range, z_range=box.z_range, margin=box.margin,
+    )
+    assert float(m_back_of_head[0]) == 0.0
+    assert float(m_face_center[0]) == 1.0
+
+    # Inject a float32-sliver degenerate triangle onto a closed icosahedron by pinching two vertices within 1e-7
+    ico = trimesh.creation.icosphere(subdivisions=2, radius=0.4)
+    v = np.asarray(ico.vertices, dtype=np.float64).copy()
+    f = np.asarray(ico.faces, dtype=np.int64).copy()
+    # Collapse face 0's edge (v[f[0,0]] and v[f[0,1]]) within float32 rounding epsilon (3e-8)
+    v[f[0, 1]] = v[f[0, 0]] + np.array([3e-8, 0.0, 0.0])
+    sliver_glb = tmp_path / "sliver.glb"
+    clean_glb = tmp_path / "clean.glb"
+    trimesh.Trimesh(vertices=v, faces=f, process=False).export(str(sliver_glb))
+    _, clean_m, _ = inplace_clean_glb(sliver_glb, clean_glb)
+    recheck = compute_mesh_metrics(clean_glb)
+    assert clean_m.is_watertight and recheck.is_watertight
+    assert recheck.degenerate_faces == 0
+    assert recheck.open_boundary_edges == 0
 
 
 def test_coarse_splice_blend_weights_and_sdf_mesher() -> None:

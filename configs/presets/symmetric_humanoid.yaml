@@ -12,14 +12,22 @@ s1:
   backend: d3dv3_4view
   d3dv3_fusion:
     enabled: true
+    stage512_seeds: [2026, 2027, 2028]
+    refine_seed: 2026
+    sharpen_t_start: 0.53
+    cfg_decay_t_start: 0.50
+    cfg_late_min: 2.2
+    guidance_scale: 4.0
+    max_tokens: 200000
+    target_faces: 2000000
     # Optional front ROI box in normalized [0, 1] height-anchored space.
-    # Override these coordinates to match your own character/humanoid proportions.
+    # Tightened to match proven V7 face sovereignty bounds (face core w_front >= 0.96).
     front_roi_box:
       name: front_head_roi
-      x_range: [-0.08, 0.08]
-      y_range: [0.80, 0.95]
-      z_range: [0.005, 0.50]
-      margin: 0.025
+      x_range: [-0.052, 0.052]
+      y_range: [0.828, 0.922]
+      z_range: [0.030, 0.50]
+      margin: 0.024
       target_view: front
       min_target_weight: 0.15
       min_surface_weight: 0.90

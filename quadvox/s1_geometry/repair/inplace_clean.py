@@ -723,6 +723,67 @@ def _fill_pinholes(
     return verts, faces, filled
 
 
+def _collapse_degenerate_face_edges(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    *,
+    area_eps_rel: float = 1e-12,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Collapse the shortest edge of any degenerate/sliver triangle without opening boundary holes."""
+    if len(faces) == 0 or len(verts) == 0:
+        return verts, faces, 0
+
+    diag = _bbox_diag(verts)
+    area_thresh = max(1e-14, float(area_eps_rel) * (diag * diag))
+    v0 = verts[faces[:, 0]]
+    v1 = verts[faces[:, 1]]
+    v2 = verts[faces[:, 2]]
+    areas = 0.5 * np.linalg.norm(np.cross(v1 - v0, v2 - v0), axis=1)
+    dup_idx = (faces[:, 0] == faces[:, 1]) | (faces[:, 1] == faces[:, 2]) | (faces[:, 2] == faces[:, 0])
+    bad = dup_idx | ~np.isfinite(areas) | (areas <= area_thresh)
+    if not np.any(bad):
+        return verts, faces, 0
+
+    num_v = len(verts)
+    parent = np.arange(num_v, dtype=np.int64)
+
+    def _find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = int(parent[x])
+        return x
+
+    collapsed = 0
+    for fi in np.flatnonzero(bad):
+        a, b, c = int(faces[fi, 0]), int(faces[fi, 1]), int(faces[fi, 2])
+        if a == b or b == c or c == a:
+            continue
+        edges_len = (
+            (float(np.sum((verts[a] - verts[b]) ** 2)), a, b),
+            (float(np.sum((verts[b] - verts[c]) ** 2)), b, c),
+            (float(np.sum((verts[c] - verts[a]) ** 2)), c, a),
+        )
+        _, u, v = min(edges_len, key=lambda item: item[0])
+        ru, rv = _find(u), _find(v)
+        if ru != rv:
+            hi_r, lo_r = (rv, ru) if ru < rv else (ru, rv)
+            parent[hi_r] = lo_r
+            collapsed += 1
+
+    if collapsed == 0:
+        return _drop_bad_and_duplicate_faces(verts, faces, area_eps_rel=area_eps_rel) + (0,)
+
+    roots = np.array([_find(i) for i in range(num_v)], dtype=np.int64)
+    uniq_roots, remap_idx = np.unique(roots, return_inverse=True)
+    new_verts = np.zeros((len(uniq_roots), 3), dtype=np.float64)
+    counts = np.bincount(remap_idx, minlength=len(uniq_roots)).astype(np.float64)
+    np.add.at(new_verts, remap_idx, verts)
+    new_verts /= np.maximum(counts[:, None], 1.0)
+    new_faces = remap_idx[faces]
+    new_verts, new_faces = _drop_bad_and_duplicate_faces(new_verts, new_faces, area_eps_rel=area_eps_rel)
+    return new_verts, new_faces, collapsed
+
+
 def inplace_clean_mesh(
     mesh: trimesh.Trimesh,
     *,
@@ -753,9 +814,44 @@ def inplace_clean_mesh(
         area_eps_rel=area_eps_rel,
     )
 
-    verts, faces = _drop_bad_and_duplicate_faces(verts, faces, area_eps_rel=area_eps_rel)
-    if unify_normals and len(faces) > 0:
-        faces = _unify_face_orientations(verts, faces)
+    # Stabilize against GLB float32 serialization: collapse any post-quantization slivers,
+    # re-heal non-manifold/pinholes if needed, and verify cleanly in float32 coordinates.
+    n_slivers_collapsed = 0
+    for _ in range(3):
+        if len(faces) == 0:
+            break
+        verts_f32 = verts.astype(np.float32).astype(np.float64)
+        diag = _bbox_diag(verts_f32)
+        area_thresh = max(1e-14, float(area_eps_rel) * (diag * diag))
+        v0 = verts_f32[faces[:, 0]]
+        v1 = verts_f32[faces[:, 1]]
+        v2 = verts_f32[faces[:, 2]]
+        areas = 0.5 * np.linalg.norm(np.cross(v1 - v0, v2 - v0), axis=1)
+        dup_f = (faces[:, 0] == faces[:, 1]) | (faces[:, 1] == faces[:, 2]) | (faces[:, 2] == faces[:, 0])
+        has_bad_f = bool(np.any(dup_f | ~np.isfinite(areas) | (areas <= area_thresh)))
+        _, _, edge_counts, _, _ = _undirected_edge_stats(faces)
+        has_bad_e = bool(np.any(edge_counts == 1) or np.any(edge_counts > 2))
+        if not has_bad_f and not has_bad_e:
+            verts = verts_f32
+            break
+        verts = verts_f32
+        if has_bad_f:
+            verts, faces, c_cnt = _collapse_degenerate_face_edges(verts, faces, area_eps_rel=area_eps_rel)
+            n_slivers_collapsed += int(c_cnt)
+        verts, faces = _repair_non_manifold(verts, faces, area_eps_rel=area_eps_rel)
+        verts, faces = _remove_small_components(verts, faces, min_area_rel=min_component_area_rel)
+        if unify_normals and len(faces) > 0:
+            faces = _unify_face_orientations(verts, faces)
+        verts, faces, f_cnt = _fill_pinholes(
+            verts,
+            faces,
+            max_perimeter_ratio=max_hole_perimeter_ratio,
+            max_vertices=max_hole_vertices,
+            area_eps_rel=area_eps_rel,
+        )
+        n_filled += int(f_cnt)
+        if unify_normals and len(faces) > 0:
+            faces = _unify_face_orientations(verts, faces)
 
     clean_mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
     if len(clean_mesh.faces) > 0:
@@ -765,6 +861,7 @@ def inplace_clean_mesh(
         "method": "inplace_clean",
         "welded_vertices": int(n_welded),
         "filled_pinholes": int(n_filled),
+        "collapsed_slivers_f32": int(n_slivers_collapsed),
         "weld_epsilon_rel": float(weld_epsilon_rel),
         "min_component_area_rel": float(min_component_area_rel),
         "max_hole_perimeter_ratio": float(max_hole_perimeter_ratio),

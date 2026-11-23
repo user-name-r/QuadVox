@@ -47,11 +47,11 @@ VIEW_DIRS: tuple[tuple[float, float, float], ...] = (
 )
 VIEW_TO_INDEX: dict[str, int] = {v: i for i, v in enumerate(VIEW_ORDER)}
 
-STAGE_BETA_MAX: dict[int, float] = {512: 3.5, 1024: 4.5, 1536: 5.5}
-STAGE512_SEEDS: tuple[int, ...] = (2025, 2026, 2027)
-SHARPEN_T_START: float = 0.55
-CFG_DECAY_T_START: float = 0.72
-CFG_LATE_MIN: float = 3.5
+STAGE_BETA_MAX: dict[int, float] = {512: 2.0, 1024: 3.5, 1536: 4.5}
+STAGE512_SEEDS: tuple[int, ...] = (2026, 2027, 2028)
+SHARPEN_T_START: float = 0.53
+CFG_DECAY_T_START: float = 0.50
+CFG_LATE_MIN: float = 2.2
 TIMM_DINOV3_MODEL: str = "vit_huge_plus_patch16_dinov3.lvd1689m"
 
 
@@ -62,11 +62,12 @@ class D3DV3FusionConfig:
     stage_resolutions: tuple[int, ...] = (512, 1024, 1536)
     stage512_seeds: tuple[int, ...] = STAGE512_SEEDS
     refine_seed: int = 2026
-    guidance_scale: float = 7.0
+    guidance_scale: float | None = None
     sharpen_t_start: float = SHARPEN_T_START
     cfg_decay_t_start: float = CFG_DECAY_T_START
     cfg_late_min: float = CFG_LATE_MIN
-    max_tokens: int = 120_000
+    max_tokens: int = 200_000
+    target_faces: int | None = 2_000_000
     roi_boxes: list[ROISovereigntyBox] = field(default_factory=list)
     smoothing_zones: list[ZoneSmoothingSpec] = field(default_factory=list)
     domain_height_full: float | None = None
@@ -925,7 +926,7 @@ def compute_4view_voxel_weights(
         w_vox = gate * (raw_w_vox / np.maximum(w_sum, 1e-6)) + (1.0 - gate) * w_fb
 
         xf_v, yf_v, zr_v = to_physical_coords_np(x_world, y_world, z_world, frame)
-        roi_stats: dict[str, Any] = {}
+        roi_masks_np: dict[str, Any] = {}
         for box in roi_boxes:
             t_vi = VIEW_TO_INDEX[box.target_view]
             ortho_cols = (2, 3) if t_vi in (0, 1) else (0, 1)
@@ -939,13 +940,15 @@ def compute_4view_voxel_weights(
             for oc in ortho_cols:
                 w_vox[..., oc] *= (1.0 - box.suppress_ortho_views * m_vox)
             w_vox[..., t_vi] = np.maximum(w_vox[..., t_vi], box.min_target_weight * m_vox)
-            roi_mask = m_vox > 0.5
-            roi_stats[box.name] = {
-                "voxel_count": int(roi_mask.sum()),
-                f"w_{box.target_view}_mean": round(float(w_vox[..., t_vi][roi_mask].mean()), 4) if np.any(roi_mask) else None,
-            }
+            roi_masks_np[box.name] = (t_vi, box.target_view, m_vox > 0.5)
 
         w_vox /= np.maximum(w_vox.sum(axis=-1, keepdims=True), 1e-6)
+        roi_stats = {}
+        for bname, (t_vi, t_view, roi_mask) in roi_masks_np.items():
+            roi_stats[bname] = {
+                "voxel_count": int(roi_mask.sum()),
+                f"w_{t_view}_mean": round(float(w_vox[..., t_vi][roi_mask].mean()), 4) if np.any(roi_mask) else None,
+            }
         w_views = np.ascontiguousarray(np.transpose(w_vox, (2, 0, 1)))
         sum_err = float(np.abs(w_views.sum(axis=0) - 1.0).max())
         fallback_frac = float((w_sum.squeeze(-1) < 0.002).mean())
@@ -996,7 +999,7 @@ def compute_4view_voxel_weights(
         xf_v = (x_world - float(frame["x_center_n"])) * s_f
         zr_v = (z_world - float(frame["z_anchor_mid_n"])) * s_f
 
-        roi_stats = {}
+        roi_masks_torch: dict[str, Any] = {}
         for box in roi_boxes:
             t_vi = VIEW_TO_INDEX[box.target_view]
             ortho_cols = (2, 3) if t_vi in (0, 1) else (0, 1)
@@ -1010,14 +1013,16 @@ def compute_4view_voxel_weights(
             for oc in ortho_cols:
                 w_vox[..., oc] = w_vox[..., oc] * (1.0 - box.suppress_ortho_views * m_vox)
             w_vox[..., t_vi] = torch.maximum(w_vox[..., t_vi], box.min_target_weight * m_vox)
-            roi_mask = m_vox > 0.5
-            cnt = int(roi_mask.sum().item())
-            roi_stats[box.name] = {
-                "voxel_count": cnt,
-                f"w_{box.target_view}_mean": round(float(w_vox[..., t_vi][roi_mask].mean().item()), 4) if cnt > 0 else None,
-            }
+            roi_masks_torch[box.name] = (t_vi, box.target_view, m_vox > 0.5)
 
         w_vox = w_vox / w_vox.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+        roi_stats = {}
+        for bname, (t_vi, t_view, roi_mask) in roi_masks_torch.items():
+            cnt = int(roi_mask.sum().item())
+            roi_stats[bname] = {
+                "voxel_count": cnt,
+                f"w_{t_view}_mean": round(float(w_vox[..., t_vi][roi_mask].mean().item()), 4) if cnt > 0 else None,
+            }
         w_views = w_vox.permute(2, 0, 1).contiguous()
         sum_err = float((w_views.sum(dim=0) - 1.0).abs().max().item())
         fallback_frac = float((w_sum.squeeze(-1) < 0.002).float().mean().item())
@@ -1067,8 +1072,7 @@ def compute_step_beta_and_cfg(
         cfg_t = float(guidance_scale)
     else:
         frac_c = min(1.0, max(0.0, (t_val - cfg_decay_t_start) / max(high - cfg_decay_t_start, 1e-6)))
-        cos_w = 0.5 * (1.0 - math.cos(math.pi * frac_c))
-        cfg_t = float(guidance_scale) + (float(cfg_late_min) - float(guidance_scale)) * cos_w
+        cfg_t = float(guidance_scale) + (float(cfg_late_min) - float(guidance_scale)) * frac_c
     return float(beta), float(cfg_t)
 
 
@@ -1242,7 +1246,7 @@ def run_d3dv3_4view_fusion(
 
     from direct3d import Direct3DV3Pipeline
     from direct3d.utils.image import prepare_image
-    from direct3d.utils.mesh import load_coarse
+    from direct3d.utils.mesh import export_mesh, load_coarse
     from direct3d.utils.sparse_mc import sparse_mc_infer
     import direct3d.utils.voxelization as d3_vox
     import trimesh
@@ -1369,6 +1373,13 @@ def run_d3dv3_4view_fusion(
             pipe._encoder.cpu()
             torch.cuda.empty_cache()
 
+        stage_guidance = (
+            float(cfg.guidance_scale)
+            if cfg.guidance_scale is not None
+            else float(sampling.get("guidance_scale", 4.0))
+        )
+        clamp_range = tuple(float(v) for v in sampling.get("clamp_range", (-1.0, 1.0)))
+
         with torch.inference_mode(), torch.autocast("cuda", dtype=pipe.dtype):
             if int(stage) == 512 and len(cfg.stage512_seeds) > 1:
                 sdfs = []
@@ -1378,11 +1389,12 @@ def run_d3dv3_4view_fusion(
                         denoiser, coords_map, perms_map, inv_perms_map, w_views, conds_map, gen_s,
                         stage=int(stage), patch_size=patch_size,
                         steps=int(sampling["steps"]),
-                        guidance_scale=float(cfg.guidance_scale),
+                        guidance_scale=stage_guidance,
                         cfg_interval=sampling["cfg_interval"],
                         sharpen_t_start=cfg.sharpen_t_start,
                         cfg_decay_t_start=cfg.cfg_decay_t_start,
                         cfg_late_min=cfg.cfg_late_min,
+                        clamp_range=clamp_range,
                     )
                     sdfs.append(sdf_s)
                 sdf_fused = torch.median(torch.stack(sdfs, dim=0), dim=0).values
@@ -1392,11 +1404,12 @@ def run_d3dv3_4view_fusion(
                     denoiser, coords_map, perms_map, inv_perms_map, w_views, conds_map, gen,
                     stage=int(stage), patch_size=patch_size,
                     steps=int(sampling["steps"]),
-                    guidance_scale=float(cfg.guidance_scale),
+                    guidance_scale=stage_guidance,
                     cfg_interval=sampling["cfg_interval"],
                     sharpen_t_start=cfg.sharpen_t_start,
                     cfg_decay_t_start=cfg.cfg_decay_t_start,
                     cfg_late_min=cfg.cfg_late_min,
+                    clamp_range=clamp_range,
                 )
 
             mc_v, mc_f = sparse_mc_infer(coords_front[:, 1:], sdf_fused, int(stage), patch_size, 0.0)
@@ -1405,13 +1418,17 @@ def run_d3dv3_4view_fusion(
 
         verts = mc_v.to(dtype=torch.float32, device=pipe.device)
         faces = mc_f.to(dtype=torch.int32, device=pipe.device)
-        final_verts_np = verts.detach().cpu().numpy()
-        final_faces_np = faces.detach().cpu().numpy()
         stage_stats.append(w_stat)
         torch.cuda.empty_cache()
 
-    assert final_verts_np is not None and final_faces_np is not None
-    raw_mesh = trimesh.Trimesh(vertices=final_verts_np, faces=final_faces_np, process=False)
+    if cfg.target_faces is not None and len(faces) > int(cfg.target_faces):
+        raw_mesh = export_mesh(verts, faces, int(cfg.target_faces))
+    else:
+        raw_mesh = trimesh.Trimesh(
+            vertices=verts.detach().cpu().numpy(),
+            faces=faces.detach().cpu().numpy(),
+            process=False,
+        )
     norm_mesh = normalize_mesh(raw_mesh, target_height=target_height)
     norm_mesh.export(str(out_glb))
     metrics = compute_mesh_metrics(norm_mesh)

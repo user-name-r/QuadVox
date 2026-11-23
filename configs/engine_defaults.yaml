@@ -41,10 +41,14 @@ s1:
   d3dv3_fusion:
     enabled: true
     stage_resolutions: [512, 1024, 1536]
-    sharpen_t_start: 0.55
-    cfg_decay_t_start: 0.72
-    cfg_late_min: 3.5
-    guidance_scale: 7.0
+    stage512_seeds: [2026, 2027, 2028]
+    refine_seed: 2026
+    sharpen_t_start: 0.53
+    cfg_decay_t_start: 0.50
+    cfg_late_min: 2.2
+    guidance_scale: 4.0
+    max_tokens: 200000
+    target_faces: 2000000
     # Layer-2 optional switches (OFF by default):
     front_roi_box: null
     roi_boxes: []
