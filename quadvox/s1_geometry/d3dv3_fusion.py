@@ -52,7 +52,7 @@ STAGE512_SEEDS: tuple[int, ...] = (2026, 2027, 2028)
 SHARPEN_T_START: float = 0.53
 CFG_DECAY_T_START: float = 0.50
 CFG_LATE_MIN: float = 2.2
-TIMM_DINOV3_MODEL: str = "vit_huge_plus_patch16_dinov3.lvd1689m"
+TIMM_DINOV3_MODEL: str = "vit_huge_plus_patch16_dinov3_qkvb.lvd1689m"
 
 
 @dataclass
@@ -820,9 +820,16 @@ def _compute_centered_fb_fallback_np(p_xyz: np.ndarray, stage: int, patch_size: 
     y_world = y_vox / float(stage - 1) - 0.5
     z_world = z_vox / float(stage - 1) - 0.5
 
-    z_mid = z_mid_py[py_idx][:, None]
-    band = band_py[py_idx][:, None]
-    w_front = _sstep_np(z_mid - band, z_mid + band, z_world)
+    py_f = np.clip((y_vox + 0.5) / float(patch_size) - 0.5, 0.0, float(grid - 1))
+    py0 = np.floor(py_f).astype(np.int64)
+    py1 = np.minimum(py0 + 1, grid - 1)
+    alpha_y = py_f - py0.astype(np.float32)
+
+    z_mid_vox = (1.0 - alpha_y) * z_mid_py[py0] + alpha_y * z_mid_py[py1]
+    band_vox = (1.0 - alpha_y) * band_py[py0] + alpha_y * band_py[py1]
+
+    u = np.clip((z_world - z_mid_vox + band_vox) / (2.0 * band_vox), 0.0, 1.0)
+    w_front = (u * u * (3.0 - 2.0 * u)).astype(np.float32)
     return w_front, x_world, y_world, z_world
 
 
@@ -871,28 +878,36 @@ def compute_4view_voxel_weights(
     raw_w_surf = surf["raw_w"]
     frame = surf["frame"]
 
-    sub = 2
+    grid = stage // patch_size
+    sub = 2 if stage <= 512 else 1
     step_vox = patch_size // sub
-    off = np.arange(sub + 1, dtype=np.int64) * step_vox
-    ox, oy, oz = np.meshgrid(off, off, off, indexing="ij")
-    ox_f, oy_f, oz_f = ox.reshape(-1), oy.reshape(-1), oz.reshape(-1)
+    lat_dim = grid * sub + 1
 
-    vx_lat = (p_xyz[:, 0:1] * patch_size + ox_f[None, :]).reshape(-1)
-    vy_lat = (p_xyz[:, 1:2] * patch_size + oy_f[None, :]).reshape(-1)
-    vz_lat = (p_xyz[:, 2:3] * patch_size + oz_f[None, :]).reshape(-1)
-    lat_keys = (vx_lat << 24) | (vy_lat << 12) | vz_lat
-    uniq_keys, inv_lat = np.unique(lat_keys, return_inverse=True)
+    offs = np.arange(sub + 1, dtype=np.int64)
+    ox, oy, oz = np.meshgrid(offs, offs, offs, indexing="ij")
+    off_grid = np.stack([ox.ravel(), oy.ravel(), oz.ravel()], axis=1)
 
-    ux = ((uniq_keys >> 24) & 0xFFF).astype(np.float32) / float(stage - 1) - 0.5
-    uy = ((uniq_keys >> 12) & 0xFFF).astype(np.float32) / float(stage - 1) - 0.5
-    uz = (uniq_keys & 0xFFF).astype(np.float32) / float(stage - 1) - 0.5
-    lat_pts = np.stack([ux, uy, uz], axis=1)
+    corners_per_patch = p_xyz[:, None, :] * sub + off_grid[None, :, :]
+    flat_keys = (
+        corners_per_patch[:, :, 0] * (lat_dim * lat_dim)
+        + corners_per_patch[:, :, 1] * lat_dim
+        + corners_per_patch[:, :, 2]
+    )
+    uniq_keys, inv_lat = np.unique(flat_keys.ravel(), return_inverse=True)
+    ux = uniq_keys // (lat_dim * lat_dim)
+    uy = (uniq_keys // lat_dim) % lat_dim
+    uz = uniq_keys % lat_dim
+    lat_pts = np.stack([ux, uy, uz], axis=1).astype(np.float32) * float(step_vox) / float(stage - 1) - 0.5
 
-    tree = cKDTree(v_norm.astype(np.float64))
-    dists, nn_idx = tree.query(lat_pts.astype(np.float64), k=3, workers=-1)
-    inv_d = 1.0 / np.maximum(dists, 1e-5)
-    inv_d /= inv_d.sum(axis=1, keepdims=True)
-    uniq_raw_w = np.sum(raw_w_surf[nn_idx] * inv_d[:, :, None], axis=1).astype(np.float32)
+    tree = cKDTree(v_norm)
+    k_nn = min(4, len(v_norm))
+    dists, nn_idx = tree.query(lat_pts, k=k_nn, workers=-1)
+    if k_nn == 1:
+        dists = dists[:, None]
+        nn_idx = nn_idx[:, None]
+    inv_d2 = 1.0 / (dists.astype(np.float32) ** 2 + 1e-7)
+    inv_d2 /= inv_d2.sum(axis=1, keepdims=True)
+    uniq_raw_w = np.einsum("nk,nkv->nv", inv_d2, raw_w_surf[nn_idx]).astype(np.float32)
 
     inv_grid = inv_lat.reshape(len(p_xyz), sub + 1, sub + 1, sub + 1)
 
@@ -1412,7 +1427,7 @@ def run_d3dv3_4view_fusion(
                     clamp_range=clamp_range,
                 )
 
-            mc_v, mc_f = sparse_mc_infer(coords_front[:, 1:], sdf_fused, int(stage), patch_size, 0.0)
+            mc_v, mc_f = sparse_mc_infer(sdf_fused.float(), coords_front[:, 1:], int(stage), patch_size, mc_threshold=0.0)
             if int(stage) == 512:
                 mc_v, mc_f, _ = prune_stage512_micro_shards(mc_v, mc_f)
 

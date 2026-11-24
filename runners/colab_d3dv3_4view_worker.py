@@ -506,7 +506,12 @@ def run_worker(spec: dict[str, Any]) -> dict[str, Any]:
         norm_tmp = OUTPUTS_DIR / "._fused_1536_norm.glb"
         clean_glb = OUTPUTS_DIR / "fused_1536_clean.glb"
         normalize_glb(out_glb, norm_tmp, target_height=target_height)
-        inplace_clean_glb(norm_tmp, clean_glb)
+        inplace_clean_glb(
+            norm_tmp,
+            clean_glb,
+            weld_epsilon_rel=float(repair_cfg.get("weld_eps_rel", 0.0)),
+            min_component_area_rel=float(repair_cfg.get("min_component_area_rel", 0.02)),
+        )
         norm_tmp.unlink(missing_ok=True)
         res["cleaned_glb"] = str(clean_glb)
 

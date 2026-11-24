@@ -36,7 +36,15 @@ s1:
       anchor_z_box:
         x_range: [-0.08, 0.08]
         y_range: [0.83, 0.92]
-    smoothing_zones: []
+    smoothing_zones:
+      - name: upper_crown_transition
+        x_range: [0.080, 0.60]
+        y_range: [0.895, 1.15]
+        z_range: [-0.60, -0.015]
+        margin: 0.030
+        extra_iter_mult: 1.8
+        blend_weight: 0.85
+        view_indices: [1, 2]
   coarse_splice:
     enabled: true
     voxel_res: 384
@@ -50,6 +58,9 @@ s1:
     default_method: cellocut
     cellocut_resolution: 1024
     cellocut_qef: false
+    post_fusion_inplace_clean: true
+    weld_eps_rel: 0.0
+    min_component_area_rel: 0.02
 
 s2:
   retopo_method: requad
